@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catfish Pond</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a1a24;font-family:system-ui,sans-serif}
+  #c{display:block;width:100%;height:100%}
+  #hud{max-height:92vh;overflow:auto;width:250px}
+  #hud select,#hud button{width:100%;margin-top:6px;font-size:12px;padding:4px;border-radius:6px;border:0;background:#1f4256;color:#fff}
+  #hud .row{display:flex;gap:4px}
+  #hud input[type=checkbox]{width:auto}
+  #ana{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center}
+  #ana[hidden]{display:none}
+  #ana .card{background:#0f2430;color:#e6f2f4;padding:14px;border-radius:12px;max-width:92vw;font-size:13px}
+  #ch{width:340px;max-width:100%;height:auto;display:block;margin:8px 0}
+  #hud{position:fixed;left:10px;top:10px;background:rgba(10,25,35,.62);color:#e6f2f4;padding:10px 12px;border-radius:10px;font-size:12px;backdrop-filter:blur(4px)}
+  #hud label{display:flex;justify-content:space-between;margin-top:6px}
+  #hud input{width:100%;margin:2px 0 0}
+  #hud b{font-weight:600}
+  #hud small{display:block;margin-top:8px;opacity:.7;line-height:1.3}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <b id="clock">Morning</b>
+  <select id="mode">
+    <option value="proto">WITH prototype (Proteus pots, sensors, feeder)</option>
+    <option value="natural">WITHOUT prototype (nature takes its course)</option>
+  </select>
+  <!-- Sliders = stand-in for the 4 Proteus potentiometers (active in prototype mode, read-only otherwise) -->
+  <label>Turbidity <span id="vT"></span></label><input id="sT" type="range" min="0" max="100" value="12">
+  <label>pH <span id="vP"></span></label><input id="sP" type="range" min="0" max="14" step="0.1" value="7.2">
+  <label>Oxygen (pot) <span id="vO"></span></label><input id="sO" type="range" min="0" max="12" step="0.1" value="8">
+  <label>Water level <span id="vL"></span></label><input id="sL" type="range" min="0" max="100" value="80">
+  <div class="row"><button id="bFeed">Feed now</button><button id="bRestock">Restock</button></div>
+  <button id="bExch">Change water (flush excreta/ammonia)</button>
+  <button id="bAna">Compare mortality: with vs without system</button>
+  <label><span>Beep sound</span><input id="snd" type="checkbox"></label>
+  <small id="status"></small>
+</div>
+<div id="ana" hidden><div class="card"><b>Fish mortality, 14 days, same fish both ways</b>
+  <canvas id="ch" width="340" height="190"></canvas><div id="anaTxt"></div><button id="anaX" style="margin-top:8px">Close</button></div></div>
+
+<script>
+/* =====================================================================
+   FISH POND SIMULATION  (single file, no libraries)
+   ===================================================================== */
+
+/* ---------- 1. SPRITE INTEGRATION ------------------------------------
+   Set enabled:true once your files exist. Each state is an array of
+   frames (animation). Frame size can be anything; it is scaled to the
+   fish's size automatically. Sprites should face RIGHT.
+
+   Example:
+     SPRITES.enabled = true;
+     SPRITES.swim  = loadFrames(['sprites/fish_swim_0.png','sprites/fish_swim_1.png', ...]);
+     SPRITES.gulp  = loadFrames(['sprites/fish_gulp_0.png', ...]);   // at surface, low oxygen
+     SPRITES.die   = loadFrames(['sprites/fish_die_0.png', ...]);    // plays once, then holds last frame
+     SPRITES.dead  = loadFrames(['sprites/fish_dead.png']);          // floating belly-up
+     SPRITES.stranded = loadFrames(['sprites/fish_flop_0.png', ...]);// water gone: wiggling on the ground
+     SPRITES.food  = loadFrames(['sprites/food.png']);
+------------------------------------------------------------------------ */
+const SPRITES = { enabled:false, swim:[], gulp:[], die:[], dead:[], stranded:[], eat:[] };  // stranded = flopping on dry ground
+function loadFrames(urls){ return urls.map(u=>{const i=new Image(); i.src=u; return i;}); }
+const SPRITE_FPS = 8;   // animation speed for sprite frames
+
+/* Optional sprites for scenery (leave empty to keep the canvas-drawn versions) */
+// const BG = { sky:new Image(), cloud:new Image(), tree:new Image(), plant:new Image() };
+// BG.sky.src='sprites/sky.png'; BG.cloud.src='sprites/cloud.png'; ...
+
+/* ---------- 2. WATER STATE (0..1 normalised) -------------------------
+   These four values are the ONLY inputs the simulation reads.
+   They come from the sliders or from Proteus potentiometers.          */
+const water = { turb:.12, ph:.51, o2:.67, level:.8 };   // ph 0..1 => pH 0..14, o2 0..1 => 0..12 mg/L
+const target = { ...water };                              // pot values (what Proteus sends)
+/* 'water' is the NORMALISED copy of 'env' used only for drawing; env (real units) is the truth. */
+//<<MODEL  (pure simulation maths: shared by the live pond AND the mortality analysis)
+/* ---------- REFERENCES (approximate, for tuning - please check against your species) ----------
+   - Boyd, C.E. "Water Quality in Ponds for Aquaculture" / "Water Quality: An Introduction":
+     dissolved oxygen (DO) crashes before dawn in fish ponds (respiration, no photosynthesis);
+     daytime photosynthesis pushes DO and pH up; pH swings daily.
+   - Fish excretion releases ammonia (TAN). Toxic un-ionised NH3 share rises steeply with pH and
+     temperature (pKa ~9.25 at 25 C). Uneaten feed rots, uses oxygen and makes ammonia + turbidity.
+   - Typical warm-water fish (tilapia/catfish): DO < 3 mg/L stressful, < 1-2 lethal; pH 6.5-9 safe;
+     NH3 > ~0.5 mg/L harmful. Evaporation ~5-8 mm/day (the demo uses a faster rate so you can see it).
+   Time scale: 300 real seconds = 24 simulated hours.                                              */
+const CFG={ N_FISH:10, feedTimes:[7,12,17], manualTimes:[8,17], feedPerDose:12, eatPerFish:1.2,
+            lookaheadH:2 };
+const P={ evapPerDay:.12, rainPerHour:.02, rainAdd:.10,     // water level
+          excrTan:.08, excrSolid:.03, nitrif:.03,           // each eaten pellet is later EXCRETED: adds ammonia (excrTan) + solids/turbidity (excrSolid); bacteria remove ammonia (nitrif)
+          wasteDecay:.08, wasteUnit:.25,                    // rotting of uneaten feed
+          respPerFish:.095, aerBoost:4, pumpPerHour:.03, exchPerHour:.12,
+          manualOverfeed:2.2, manualCheckDays:1, responseDelayH:.5 };
+const env={level:.8,temp:26,o2:8,ph:7.2,tan:.3,turb:12,waste:0,aer:false,pump:false,exch:false};
+
+function mkTraits(r){          // every fish is slightly different => they do not all die together
+  /* CATFISH (Clarias / Ictalurus type): hardy, air-breathing (can gulp air at the surface), tolerate low oxygen,
+     wider pH and more ammonia than carp/tilapia. Nocturnal/crepuscular bottom feeders that find food with
+     their barbels (smell/taste) - see updateFish(). 'bold' = how eager/forward a fish is. */
+  return {resist:.5+r(), o2d:.3+r()*.9, phLo:4.2+r()*.8, phHi:9.5+r()*1.2, nh3d:.7+r()*.8, strandLv:.04+r()*.04, bold:.3+r()*.7, health:1, dead:false, cause:''};
+}
+const nh3Of=e=>e.tan/(1+Math.pow(10,9.25-e.ph));
+function stress(e,f,stranded){   // -> [health lost per second, main cause]
+  let d=0,best=0,c='';
+  const add=(v,n)=>{ if(v>0){ d+=v; if(v>best){best=v;c=n;} } };
+  add(e.o2<f.o2d? .012+(f.o2d-e.o2)*.08:0,'low oxygen');
+  add(e.ph<f.phLo? .012+(f.phLo-e.ph)*.06:0,'acidic pH');
+  add(e.ph>f.phHi? .012+(e.ph-f.phHi)*.06:0,'alkaline pH');
+  add(nh3Of(e)>f.nh3d? .012+(nh3Of(e)-f.nh3d)*.1:0,'ammonia');
+  add(e.turb>92? .004:0,'turbidity');
+  add(stranded? .03:0,'no water');      // air-breathing catfish last longer out of water
+  return [d*f.resist,c];
+}
+/* Natural pond physics (used when there is NO prototype, and by the analysis) */
+function stepEnv(e,dt,t,n,rand){
+  const dH=dt*24/300, sun=Math.max(0,Math.sin(t*6.2832)), vol=Math.max(e.level,.12);
+  e.level-=P.evapPerDay/24*(.3+sun)/.94*dH;                    // sun evaporates water
+  if(rand()<P.rainPerHour*dH) e.level+=P.rainAdd;               // occasional rain
+  if(e.pump) e.level+=P.pumpPerHour*dH;                         // (system only) top-up pump
+  e.level=clamp(e.level,0,1);
+  e.temp=25+4*Math.sin((t-.1)*6.2832)+(1-e.level)*3;            // shallow water gets hotter
+  const T=e.temp, sat=14.6-.4*T+.005*T*T, bloom=clamp(e.tan/6,0,1);   // nutrients -> algae bloom
+  const decay=P.wasteDecay*e.waste; e.waste=Math.max(0,e.waste-decay*dH);
+  const reaer=.25*(sat-e.o2)*(e.aer?P.aerBoost:1);              // air <-> water exchange
+  const photo=1.6*sun*(1+bloom)*(1-e.turb/150);                 // plants/algae make O2 in daylight
+  const resp=(P.respPerFish*n*(T/25)+.8*decay)/vol+.15+.4*bloom; // fish + rotting feed use O2 (less water = worse)
+  e.o2=clamp(e.o2+(reaer+photo-resp)*dH,0,16);
+  const rel=(e.exc||0)*.25*dH; e.exc=(e.exc||0)-rel;            // (analysis only) eaten feed is excreted a few hours later
+  e.waste+=rel*P.excrSolid; e.tan=Math.max(0,e.tan+((.4*decay+rel*P.excrTan)/vol-P.nitrif*e.tan)*dH);
+  const phT=7.4+(.9+1.2*bloom)*(sun-.35)-.15*e.tan;             // day: pH up, night/excretion: pH down
+  e.ph=clamp(e.ph+(phT-e.ph)*Math.min(1,.3*dH),3,11);
+  const tuT=5+12*e.waste+20*bloom+8*(1-e.level);
+  e.turb=clamp(e.turb+(tuT-e.turb)*Math.min(1,.25*dH),0,100);
+  if(e.exch){ const f=Math.min(1,P.exchPerHour*dH); e.tan*=1-f; e.waste*=1-f; e.turb-=(e.turb-5)*f; }
+}
+/* ---------- SENSORS: warn = "about to go bad" (current OR predicted 2 h ahead), crit = already bad ---------- */
+const SENS=[{k:'do',n:'DO',  get:e=>e.o2,       lo:[4,2.5],  hi:[99,99]},
+            {k:'ph',n:'pH',  get:e=>e.ph,       lo:[6.5,5.5],hi:[8.8,9.5]},
+            {k:'tu',n:'NTU', get:e=>e.turb,     lo:[-1,-1],  hi:[60,85]},
+            {k:'lv',n:'LVL', get:e=>e.level*100,lo:[35,15],  hi:[999,999]}];
+const grade=(s,v)=>(v<s.lo[1]||v>s.hi[1])?2:(v<s.lo[0]||v>s.hi[0])?1:0;
+function makeSensorState(){ return SENS.map(()=>({prev:null,slope:0})); }
+function updateSensors(st,e,dH){   // -> [0 ok | 1 warn | 2 critical] per sensor
+  return SENS.map((s,i)=>{ const v=s.get(e), q=st[i];
+    if(q.prev!==null&&dH>0) q.slope+=(((v-q.prev)/dH)-q.slope)*.05; q.prev=v;
+    return Math.max(grade(s,v), grade(s,v+q.slope*CFG.lookaheadH)>0?1:0); });
+}
+const crossedHour=(a,b,list)=>list.some(x=>a<=b?(a<x&&x<=b):(x>a||x<=b));
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+
+/* ---------- ANALYSIS: run the same fish through the pond WITH and WITHOUT the system ----------
+   WITHOUT: hand feeding (overfeeds), farmer visits once per P.manualCheckDays (tops up water, partial change).
+   WITH:    metered feeder + sensors; once a sensor stays red/blinking for P.responseDelayH the farmer/actuators
+            react (aerator, top-up pump, water exchange). That reaction is the ASSUMPTION - edit it freely.   */
+function runScenario(withSystem,seed,days){
+  const r=mulberry32(seed), wx=mulberry32(seed+7919), N=CFG.N_FISH, dt=.5, fs=[];
+  for(let i=0;i<N;i++) fs.push(mkTraits(r));
+  const e={level:.85,temp:26,o2:7.5,ph:7.3,tan:.3,turb:12,waste:0,exc:0,aer:false,pump:false,exch:false};
+  const st=makeSensorState(), tm=[0,0,0,0], curve=[0], causes={}, feedH=withSystem?CFG.feedTimes:CFG.manualTimes;
+  let prevH=6, dead=0;
+  for(let i=1;i<=days*300/dt;i++){
+    const t=((i*dt)/300)%1, h=(t*24+6)%24, dH=dt*24/300, alive=N-dead;
+    if(crossedHour(prevH,h,feedH)){ const dose=CFG.feedPerDose*(withSystem?1:P.manualOverfeed); e.exc+=Math.min(dose,alive*CFG.eatPerFish); e.waste+=(Math.max(0,dose-alive*CFG.eatPerFish)+dose*(withSystem?.03:.12))*P.wasteUnit; }   // 3 spread feeders miss far less than hand-throwing
+
+    if(!withSystem&&crossedHour(prevH,h,[8])&&Math.floor(i*dt/300)%P.manualCheckDays===0){ e.level=Math.max(e.level,.85); e.tan*=.6; e.turb*=.7; e.waste*=.6; }
+    prevH=h;
+    stepEnv(e,dt,t,alive,wx);
+    if(withSystem){ const g2=updateSensors(st,e,dH); for(let k=0;k<4;k++) tm[k]=g2[k]>0?tm[k]+dH:0;
+      e.aer=tm[0]>=P.responseDelayH||(e.aer&&e.o2<6.5);
+      e.pump=tm[3]>=P.responseDelayH||(e.pump&&e.level<.85);
+      e.exch=tm[1]>=P.responseDelayH||tm[2]>=P.responseDelayH||(e.exch&&(e.turb>20||e.ph>8.4||e.ph<6.8)); }
+    for(const f of fs){ if(f.dead) continue; const [d,c]=stress(e,f,e.level<f.strandLv);
+      if(d>0){ f.health-=d*dt; f.cause=c; } else f.health=Math.min(1,f.health+.01*dt);
+      if(f.health<=0){ f.dead=true; dead++; causes[c]=(causes[c]||0)+1; } }
+    if(i%300===0) curve.push(dead/N);                 // one point per half day
+  }
+  return {curve,causes};
+}
+//>>MODEL
+
+
+/* ---------- 3. PROTEUS HOOK ------------------------------------------
+   Idea: Proteus (VSM) has a COMPIM / virtual terminal. Pair it with a
+   virtual serial port (e.g. com0com: COM5 <-> COM6). A microcontroller in
+   Proteus reads 4 potentiometers on ADC pins and prints one line:
+        T,P,O,L\n       e.g.  512,380,900,1023   (10-bit ADC values 0-1023)
+   Then the browser reads that port with the Web Serial API:
+
+   async function connectProteus(){
+     const port = await navigator.serial.requestPort();     // pick COM6
+     await port.open({ baudRate: 9600 });
+     const reader = port.readable.pipeThrough(new TextDecoderStream()).getReader();
+     let buf='';
+     for(;;){
+       const {value,done}=await reader.read(); if(done) break;
+       buf+=value; let i;
+       while((i=buf.indexOf('\n'))>=0){
+         const [t,p,o,l]=buf.slice(0,i).trim().split(',').map(Number); buf=buf.slice(i+1);
+         setPotentiometers(t,p,o,l);
+       }
+     }
+   }
+   document.body.addEventListener('click', ()=>{ if(!window._pc){window._pc=1; connectProteus();} }, {once:true});
+   (Web Serial needs Chrome/Edge and https or localhost. Alternative: a tiny
+    Node/WebSocket bridge that forwards the serial line to the page.)       */
+function setPotentiometers(t,p,o,l){            // call with raw ADC 0..1023
+  target.turb=t/1023; target.ph=p/1023; target.o2=o/1023; target.level=l/1023;
+  syncSliders();
+}
+
+/* ---------- 4. SETUP ----------------------------------------------- */
+const cv=document.getElementById('c'), g=cv.getContext('2d');
+let W=0,H=0;
+function resize(){
+  const d=devicePixelRatio||1; W=innerWidth; H=innerHeight;
+  cv.width=W*d; cv.height=H*d; g.setTransform(d,0,0,d,0,0); buildScene();
+}
+addEventListener('resize',resize);
+
+const $=id=>document.getElementById(id);
+const S={T:$('sT'),P:$('sP'),O:$('sO'),L:$('sL')};
+function readSliders(){
+  target.turb=S.T.value/100; target.ph=S.P.value/14; target.o2=S.O.value/12; target.level=S.L.value/100;
+}
+function syncSliders(){ S.T.value=target.turb*100; S.P.value=target.ph*14; S.O.value=target.o2*12; S.L.value=target.level*100; }
+Object.values(S).forEach(s=>s.addEventListener('input',readSliders));
+
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), lerp=(a,b,t)=>a+(b-a)*t, rnd=(a,b)=>a+Math.random()*(b-a);
+const mix=(c1,c2,t)=>c1.map((v,i)=>Math.round(lerp(v,c2[i],t)));
+const rgb=(c,a=1)=>`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+/* geometry (recomputed in buildScene) */
+let horizon,landY,bedY,poolL,poolR,plants=[],rocks=[],clouds=[],stars=[],bubbles=[],motes=[],fish=[],food=[],trees=[];
+function surfaceY(){ return lerp(bedY, landY+14, env.level); }  // level 0 = pond completely dry
+
+function buildScene(){
+  horizon=H*.30; landY=H*.38; bedY=H*.93; poolL=W*.05; poolR=W*.95;
+  plants=[];
+  for(let i=0;i<Math.floor(W/28);i++) plants.push({x:rnd(poolL+10,poolR-10),h:rnd(50,160),n:3+Math.floor(rnd(0,3)),ph:rnd(0,6.28),w:rnd(2,4),g:rnd(0,1)});
+  rocks=[]; for(let i=0;i<9;i++) rocks.push({x:rnd(poolL+20,poolR-20),r:rnd(10,30),s:rnd(.5,.8)});
+  clouds=[]; for(let i=0;i<6;i++) clouds.push({x:rnd(0,W),y:rnd(10,horizon*.7),s:rnd(.6,1.4),v:rnd(4,12)});
+  stars=[]; for(let i=0;i<120;i++) stars.push({x:rnd(0,W),y:rnd(0,horizon),r:rnd(.4,1.4),p:rnd(0,6)});
+  trees=[]; for(let i=0;i<5;i++) trees.push({x:rnd(0,1)<.5?rnd(-10,poolL+40):rnd(poolR-40,W),h:rnd(70,130)});
+  if(!fish.length) for(let i=0;i<CFG.N_FISH;i++) spawnFish();
+}
+
+/* ---------- 5. FISH ---------------------------------------------------
+   state: 'swim' | 'gulp' | 'dying' | 'dead'                            */
+const PALETTE=[[74,74,66],[92,80,60],[62,68,74],[100,90,72],[80,72,80]];   // catfish: slate, olive, brown, grey
+const stats={dead:0,causes:{}};
+const SPACE=95;                   // personal space in pixels (raise for more room between fish)
+let lightNow=1, feedAlert=0;
+/* ---------- EXCRETA: fish excrete a few seconds AFTER eating (so the amount follows the feed). Each event makes a visible
+   brown particle that sinks, spreads and fades into the water ("blends in") and adds ammonia (-> lower pH) and solids
+   (-> turbidity) to the real water values. Eat more => excrete more => murkier, more acidic water. */
+const poop=[];
+function excrete(f){
+  poop.push({x:f.x-f.dir*f.size*1.4,y:f.y+f.size*.2,vx:-f.dir*rnd(4,10),vy:rnd(2,6),age:0,life:rnd(12,18)});
+  env.waste+=P.excrSolid; env.tan+=P.excrTan/Math.max(env.level,.12);
+}
+function updatePoop(dt,sY){
+  for(const p of poop){ p.age+=dt; p.vx*=1-dt; p.vy=lerp(p.vy,7,dt); p.x+=p.vx*dt; p.y=clamp(p.y+p.vy*dt,sY,bedY-1); }
+  for(let i=poop.length-1;i>=0;i--) if(poop[i].age>poop[i].life) poop.splice(i,1);
+}
+function drawPoop(){   /* SPRITE HOOK: swap for an excreta sprite if you like */
+  for(const p of poop){ const k=p.age/p.life, a=1-k, r=2+k*9;
+    g.fillStyle=`rgba(115,92,52,${.14*a})`; g.beginPath(); g.arc(p.x,p.y,r*2.3,0,6.283); g.fill();     // haze spreading into the water
+    g.fillStyle=`rgba(105,80,45,${.8*a*a})`; g.beginPath(); g.ellipse(p.x,p.y,r,r*.6,0,0,6.283); g.fill(); }
+}      // feedAlert = seconds the fish stay 'excited' after a feeding (or just before one)
+function spawnFish(){
+  const sY=surfaceY(), sz=rnd(11,18); let x,y;
+  for(let i=0;i<20;i++){ x=rnd(poolL+40,poolR-40); y=rnd(Math.max(sY+30,bedY-90),Math.max(sY+31,bedY-20));   // catfish live near the bottom
+    if(fish.every(o=>Math.hypot(o.x-x,o.y-y)>110)) break; }
+  const f=Object.assign(mkTraits(Math.random),{x,y,vx:rnd(-1,1),vy:0,size:sz,col:PALETTE[Math.floor(rnd(0,PALETTE.length))],
+    dir:1,tx:0,ty:0,hx:x,wt:0,phase:rnd(0,6),state:'swim',mode:'scout',stateT:0,fade:1,speed:rnd(26,46),stomach:rnd(.2,.6),
+    sniffT:0,eatT:0,gutQ:[],fd:Math.floor(rnd(0,FEEDER.xs.length))});      // fd = the feeder this fish waits under
+  fish.push(f); newTarget(f);
+}
+function newTarget(f){            // scouting spot: mostly along the bottom, sometimes mid-water at night; furthest from other fish
+  const sY=surfaceY(), night=1-lightNow; let best=[f.x,f.y],bs=-1;
+  for(let i=0;i<8;i++){ const x=rnd(poolL+30,poolR-30), y=Math.random()<.25*night?rnd(sY+30,Math.max(sY+31,bedY-30)):bedY-rnd(14,60); let m=1e9;
+    for(const o of fish) if(o!==f&&o.state!=='dead') m=Math.min(m,Math.hypot(o.tx-x,o.ty-y),Math.hypot(o.x-x,o.y-y));
+    if(m>bs){bs=m;best=[x,Math.max(y,sY+20)];} }
+  f.tx=best[0]; f.ty=best[1]; f.wt=rnd(2,5);
+  const cover=rocks.length?rocks[Math.floor(rnd(0,rocks.length))]:{x:f.x}; f.hx=cover.x+rnd(-25,25);   // daytime hiding spot (rock/cover)
+}
+function updateFish(f,dt,sY){
+  const stranded=(bedY-sY)<f.size*.5+8, lowO2=env.o2<3;
+  f.stateT+=dt; f.phase+=dt*(4+Math.hypot(f.vx,f.vy)*.08);
+  if(f.state!=='dying'&&f.state!=='dead'){
+    const [d,c]=stress(env,f,stranded);              // each fish has its own tolerances => different death times
+    if(d>0){ f.health-=d*dt; f.cause=c; } else f.health=Math.min(1,f.health+.01*dt);
+    f.stomach=Math.max(0,f.stomach-.015*dt);
+    for(let i=f.gutQ.length-1;i>=0;i--){ f.gutQ[i]-=dt; if(f.gutQ[i]<=0){ f.gutQ.splice(i,1); excrete(f); } }   // digested -> excrete
+    if(f.health<=0){ f.state=stranded?'dead':'dying'; f.stateT=0; stats.dead++; stats.causes[f.cause]=(stats.causes[f.cause]||0)+1; }
+  }
+  if(f.state==='dying'){                  // spin, then float up belly-up
+    f.vx*=.97; f.vy=-18*Math.min(f.stateT/2,1); if(f.stateT>2.5){ f.state='dead'; f.stateT=0; }
+  } else if(f.state==='dead'){            // dead fish STAY (floating, or lying on the ground if the pond is dry)
+    f.vx*=.95; f.vy=(Math.min(sY+6,bedY-f.size*.3)-f.y)*.6;
+  } else if(stranded){                    // no water: flop about on the ground until it dies
+    f.state='stranded'; f.vx=Math.sin(f.phase*2)*25; f.vy=(bedY-f.size*.3-f.y)*4;
+  } else {
+    /* ---- CATFISH BEHAVIOUR ----------------------------------------------------------------
+       rush       : smells food (barbels = taste buds) from far away and rushes it; bold fish rush faster
+       anticipate : after a feeding, or just before a scheduled one, fish gather under their feeder (they learn the routine)
+       air        : very low oxygen -> swim up and gulp air (catfish can)
+       rest       : daytime -> hide near rocks/cover, barely move (catfish are nocturnal)
+       scout      : night/dusk -> patrol the bottom, stop to sniff with barbels, move on                      */
+    f.wt-=dt; f.sniffT=Math.max(0,f.sniffT-dt); f.eatT=Math.max(0,f.eatT-dt);
+    const night=1-lightNow; let tx=f.tx, ty=f.ty, sp=f.speed*(.5+water.o2*.5), best=null, bd=1e9;
+    if(f.stomach<.85) for(const p of food){ if(p.dead||p.y<sY)continue; const dd=Math.hypot(p.x-f.x,p.y-f.y); if(dd<bd&&dd<250+f.bold*350){bd=dd;best=p;} }
+    if(lowO2){ f.mode='air'; ty=sY+8; sp*=.7; }
+    else if(best){ f.mode='rush'; tx=best.x; ty=best.y; sp*=1.9+f.bold*.8; }
+    else if(feedAlert>0&&f.stomach<.85){ f.mode='anticipate'; tx=W*FEEDER.xs[f.fd]+Math.sin(f.phase*.4+f.fd)*45; ty=sY+25+f.bold*35; sp*=1.4; }
+    else if(lightNow>.55&&f.stomach>.3){ f.mode='rest'; tx=f.hx; ty=bedY-10; sp*=.35; if(Math.hypot(tx-f.x,ty-f.y)<14) sp=0; }
+    else { f.mode='scout'; sp*=.7+night*.8;
+      if(f.sniffT>0) sp=0;                                           // pause: barbels sweeping the bottom
+      else if(Math.hypot(f.tx-f.x,f.ty-f.y)<22||f.wt<=0){ f.sniffT=rnd(1,2.5); newTarget(f); } }
+    f.state=lowO2?'gulp':f.eatT>0?'eat':'swim';
+    const ax=tx-f.x, ay=ty-f.y, dd0=Math.hypot(ax,ay)||1;
+    f.vx=lerp(f.vx,ax/dd0*sp,dt*2); f.vy=lerp(f.vy,ay/dd0*sp*.6,dt*2);
+    const space=(f.mode==='rush'||f.mode==='anticipate')?45:f.mode==='rest'?SPACE*.6:SPACE;     // crowd in when eager
+    for(const o of fish){ if(o===f||o.state==='dead')continue; const dx=f.x-o.x,dy=f.y-o.y,dd=Math.hypot(dx,dy);
+      if(dd<space&&dd>.1){ const k=(space-dd)/space; f.vx+=dx/dd*k*140*dt; f.vy+=dy/dd*k*140*dt; } }
+    if(best&&bd<14){ best.dead=true; f.stomach+=.25; f.eatT=.35; feedStats.eatenG+=PELLET_G; f.gutQ.push(rnd(5,12)); }   // excretes 5-12 s later
+  }
+  f.x+=f.vx*dt; f.y+=f.vy*dt;
+  const lo=sY+(f.state==='dead'?2:8); f.x=clamp(f.x,poolL+15,poolR-15); f.y=clamp(f.y,lo,Math.max(lo,bedY-(f.state==='stranded'||f.state==='dead'?f.size*.3:12)));
+  if(Math.abs(f.vx)>3) f.dir=f.vx>0?1:-1;
+}
+
+function drawFish(f,light){
+  const s=f.size, wag=Math.sin(f.phase)*(f.state==='gulp'?.25:f.state==='stranded'?1:.45);
+  // murky water hides fish deeper down
+  const depth=clamp((f.y-surfaceY())/(bedY-surfaceY()),0,1);
+  let alpha=f.fade*(1-water.turb*(.25+depth*.6));
+  g.save(); g.globalAlpha=alpha; g.translate(f.x,f.y);
+  const tilt=clamp(f.vy*.012,-.4,.4)*f.dir+(f.sniffT>0?.3:0);   // head down while sniffing 
+  g.scale(f.dir,1); g.rotate(tilt);
+  if(f.state==='stranded'){ g.rotate(Math.sin(f.phase*3)*.5+1.2); g.translate(0,-Math.abs(Math.sin(f.phase*1.5))*8); }  // flopping
+  if(f.state==='dead') g.scale(1,-1);
+  else if(f.state==='dying') g.rotate(Math.sin(f.stateT*8)*.4+f.stateT*.6);
+
+  /* ---- SPRITE HOOK: swap canvas fish for animation frames ---- */
+  if(SPRITES.enabled){
+    const set=f.state==='swim'?SPRITES.swim:f.state==='eat'?(SPRITES.eat.length?SPRITES.eat:SPRITES.swim):f.state==='gulp'?SPRITES.gulp:f.state==='stranded'?(SPRITES.stranded.length?SPRITES.stranded:SPRITES.gulp):f.state==='dying'?SPRITES.die:SPRITES.dead;
+    if(set&&set.length){
+      // 'die' plays once from the start; the others loop
+      let idx=f.state==='dying'?Math.min(Math.floor(f.stateT*SPRITE_FPS),set.length-1):Math.floor(f.phase*SPRITE_FPS/6.28)%set.length;
+      const img=set[idx]; if(img&&img.complete){ const w=s*3.2,h=w*img.height/img.width; g.drawImage(img,-w/2,-h/2,w,h); g.restore(); return; }
+    }
+  }
+  /* ---- Canvas fallback: CATFISH = long ellipse body, broad flat head, whiskers (barbels), triangle tail ---- */
+  const c=f.col, body=rgb(mix(c,[20,40,60],depth*.35*(1-light*.5))), pale=mix([215,208,190],[20,40,60],depth*.3);
+  const L=s*1.3, hh=s*.42;
+  g.save(); g.translate(-L*.95,0); g.rotate(wag); g.fillStyle=body;                                    // tail (triangle)
+  g.beginPath(); g.moveTo(0,0); g.lineTo(-s,-s*.5); g.lineTo(-s,s*.5); g.closePath(); g.fill(); g.restore();
+  g.fillStyle=rgb(mix(c,[0,0,0],.25));
+  g.beginPath(); g.moveTo(-L*.8,-hh*.8); g.lineTo(-L*.1,-hh*1.45); g.lineTo(L*.35,-hh*.8); g.fill();     // dorsal fin
+  g.beginPath(); g.moveTo(-L*.85,hh*.7); g.lineTo(-L*.3,hh*1.35); g.lineTo(L*.1,hh*.85); g.fill();      // long anal fin
+  g.fillStyle=body; g.beginPath(); g.ellipse(0,0,L,hh,0,0,6.283); g.fill();                             // body
+  g.fillStyle=rgb(pale,.5); g.beginPath(); g.ellipse(L*.1,hh*.45,L*.8,hh*.4,0,0,6.283); g.fill();       // pale belly
+  g.fillStyle=rgb(mix(c,[0,0,0],.2)); g.beginPath(); g.ellipse(L*.72,0,L*.38,hh*.95,0,0,6.283); g.fill(); // flat head
+  g.fillStyle=rgb(mix(c,[0,0,0],.3)); g.beginPath(); g.ellipse(L*.35,hh*.55,s*.22,s*.1,.6+wag*.4,0,6.283); g.fill(); // pectoral fin
+  const sw=(f.sniffT>0||f.mode==='rush')?1:.3;                                                          // barbels wave more when sniffing/hunting
+  g.strokeStyle=rgb(pale,.9); g.lineWidth=1.3; g.lineCap='round';
+  for(const [dy,len,spr] of [[-.25,1.1,-.5],[-.1,.9,-.9],[.15,.8,.5],[.3,.7,.9]]){
+    const bx=L*1.05, by2=hh*dy, w1=Math.sin(f.phase*(2+sw*3)+dy*9)*sw*s*.25;
+    g.beginPath(); g.moveTo(bx,by2); g.quadraticCurveTo(bx+s*len*.5,by2+spr*s*.2+w1,bx+s*len,by2+spr*s*.5+w1*1.5); g.stroke(); }
+  g.strokeStyle='#111'; g.fillStyle='#111';
+  if(f.state==='dead'||f.state==='dying'){ g.lineWidth=1.3; g.beginPath(); g.moveTo(L*.8,-hh*.6);g.lineTo(L*.95,-hh*.3);g.moveTo(L*.95,-hh*.6);g.lineTo(L*.8,-hh*.3);g.stroke(); }
+  else{ g.beginPath(); g.arc(L*.88,-hh*.45,s*.07,0,6.283); g.fill(); }                                  // small eye on top of head
+  if(f.state==='eat'||(f.state==='gulp'&&Math.sin(f.phase*2)>0)){ g.fillStyle='#300'; g.beginPath(); g.arc(L*1.08,hh*.1,s*.1,0,6.283); g.fill(); }  // open mouth
+  g.restore();
+}
+
+/* ---------- 6. SKY, TIME OF DAY (5 min cycle) ---------------------- */
+const DAY_MS=5*60*1000;      // full morning -> night -> morning in 5 minutes
+let t0=performance.now();
+function timeOfDay(now){ return ((now-t0)/DAY_MS+0.0)%1; }   // 0 = sunrise, .25 noon, .5 sunset, .75 midnight
+function lightLevel(t){ return clamp(Math.sin(t*6.283)*1.4+.1,0,1); }   // 0 night .. 1 day
+const NIGHT_TOP=[8,12,36], DAY_TOP=[70,150,225], NIGHT_BOT=[20,28,60], DAY_BOT=[190,225,245], DUSK=[255,140,80];
+
+function drawSky(t,light,now){
+  const dusk=clamp(1-Math.abs(light-.25)*4,0,1)*(Math.abs(Math.sin(t*6.283))<.45?1:0);
+  const top=mix(NIGHT_TOP,DAY_TOP,light), bot=mix(mix(NIGHT_BOT,DAY_BOT,light),DUSK,dusk*.7);
+  const gr=g.createLinearGradient(0,0,0,horizon); gr.addColorStop(0,rgb(top)); gr.addColorStop(1,rgb(bot));
+  g.fillStyle=gr; g.fillRect(0,0,W,horizon+2);
+  // stars
+  const sa=clamp(1-light*2.2,0,1);
+  if(sa>0) for(const s of stars){ g.fillStyle=`rgba(255,255,255,${sa*(.5+.5*Math.sin(now/600+s.p))})`; g.fillRect(s.x,s.y,s.r,s.r); }
+  // sun & moon move on an arc
+  const a=t*6.283, sx=W*.5-Math.cos(a)*W*.42, sy=horizon-Math.sin(a)*horizon*.85;
+  const mx=W*.5+Math.cos(a)*W*.42, my=horizon+Math.sin(a)*horizon*.85;
+  /* SPRITE HOOK: draw BG sun / moon images here instead if you prefer */
+  g.save(); g.beginPath(); g.rect(0,0,W,horizon+2); g.clip();
+  const sg=g.createRadialGradient(sx,sy,4,sx,sy,60); sg.addColorStop(0,'rgba(255,240,180,1)'); sg.addColorStop(.3,'rgba(255,200,100,.5)'); sg.addColorStop(1,'rgba(255,200,100,0)');
+  g.fillStyle=sg; g.beginPath(); g.arc(sx,sy,60,0,6.283); g.fill();
+  g.fillStyle='#fff4c8'; g.beginPath(); g.arc(sx,sy,16,0,6.283); g.fill();
+  g.fillStyle='#e8eefc'; g.beginPath(); g.arc(mx,my,13,0,6.283); g.fill();
+  g.fillStyle=rgb(mix(NIGHT_TOP,DAY_TOP,.1),.9); g.beginPath(); g.arc(mx+5,my-3,11,0,6.283); g.fill();
+  // clouds
+  for(const c of clouds){ c.x+=c.v*.016; if(c.x>W+120)c.x=-120;
+    g.fillStyle=`rgba(${mix([60,70,100],[255,255,255],light).join(',')},.85)`;
+    for(const [dx,dy,r] of [[0,0,22],[24,-8,28],[52,0,22],[26,6,24]]){ g.beginPath(); g.arc(c.x+dx*c.s,c.y+dy*c.s,r*c.s,0,6.283); g.fill(); } }
+  g.restore();
+}
+
+function drawLand(light){
+  // far hills
+  g.fillStyle=rgb(mix([14,26,32],[96,150,96],light)); g.beginPath(); g.moveTo(0,horizon);
+  for(let x=0;x<=W;x+=30) g.lineTo(x,horizon-14-Math.sin(x*.01)*14-Math.sin(x*.027)*8); g.lineTo(W,horizon+4); g.lineTo(0,horizon+4); g.fill();
+  // ground
+  g.fillStyle=rgb(mix([18,34,28],[84,140,70],light)); g.fillRect(0,horizon,W,landY-horizon+4);
+  /* SPRITE HOOK: ground/ tree sprites -> g.drawImage(BG.tree, tx, landY-h, w, h) */
+  for(const tr of trees){ g.fillStyle=rgb(mix([20,16,14],[90,60,35],light)); g.fillRect(tr.x-5,landY-tr.h*.6,10,tr.h*.6);
+    g.fillStyle=rgb(mix([12,30,26],[50,120,60],light)); g.beginPath(); g.arc(tr.x,landY-tr.h*.7,tr.h*.32,0,6.283); g.arc(tr.x-20,landY-tr.h*.55,tr.h*.22,0,6.283); g.arc(tr.x+20,landY-tr.h*.55,tr.h*.22,0,6.283); g.fill(); }
+  // soil block holding the pond
+  const sg=g.createLinearGradient(0,landY,0,H); sg.addColorStop(0,rgb(mix([30,22,18],[110,80,52],light))); sg.addColorStop(1,rgb(mix([14,10,10],[60,42,30],light)));
+  g.fillStyle=sg; g.fillRect(0,landY,W,H-landY);
+  g.fillStyle=rgb(mix([20,40,30],[96,160,70],light)); g.fillRect(0,landY-4,W,8);       // grass lip
+  for(let x=0;x<W;x+=6){ if(x>poolL-4&&x<poolR+4)continue; g.fillRect(x,landY-8-Math.sin(x)*3,2,8); }
+}
+
+/* ---------- 7. WATER ----------------------------------------------- */
+function waterColor(light){
+  // pH: acidic -> yellow/brown, neutral -> blue-green, alkaline -> milky teal
+  const ph=water.ph*14;
+  let base=mix([20,70,110],[60,170,190],light);
+  if(ph<6.5) base=mix(base,[150,140,50],clamp((6.5-ph)/5,0,1)*.6);
+  if(ph>8) base=mix(base,[120,200,190],clamp((ph-8)/6,0,1)*.5);
+  return mix(base,[110,100,60],water.turb*.7);   // turbidity -> muddy brown-green
+}
+function drawWaterBack(light,now,sY,col){
+  g.fillStyle=rgb(mix([14,10,10],[60,42,30],light)); g.fillRect(poolL,landY,poolR-poolL,Math.max(0,sY-landY));  // empty pond cavity
+  const gr=g.createLinearGradient(0,sY,0,bedY); gr.addColorStop(0,rgb(col,.95)); gr.addColorStop(1,rgb(mix(col,[5,15,25],.7),1));
+  g.fillStyle=gr; g.fillRect(poolL,sY,poolR-poolL,H-sY);
+  // sand bed
+  g.fillStyle=rgb(mix([40,36,30],[150,130,90],light*.6+.2)); g.beginPath(); g.moveTo(poolL,H);
+  for(let x=poolL;x<=poolR;x+=20) g.lineTo(x,bedY+Math.sin(x*.03)*6); g.lineTo(poolR,H); g.fill();
+  for(const r of rocks){ g.fillStyle=rgb(mix([40,45,50],[120,125,130],light*.5+.2)); g.beginPath(); g.ellipse(r.x,bedY+4,r.r,r.r*r.s,0,Math.PI,6.283); g.fill(); }
+  // light shafts in daytime
+  if(light>.2){ g.save(); g.globalCompositeOperation='lighter'; for(let i=0;i<6;i++){ const x=poolL+(i+.5)*(poolR-poolL)/6+Math.sin(now/3000+i)*30;
+    const lg=g.createLinearGradient(0,sY,0,bedY); lg.addColorStop(0,`rgba(255,255,200,${.10*light*(1-water.turb*.8)})`); lg.addColorStop(1,'rgba(255,255,200,0)');
+    g.fillStyle=lg; g.beginPath(); g.moveTo(x-12,sY); g.lineTo(x+12,sY); g.lineTo(x+70,bedY); g.lineTo(x+30,bedY); g.fill(); } g.restore(); }
+}
+function drawPlants(light,now){
+  /* SPRITE HOOK: replace with g.drawImage(BG.plant, ...) per plant if desired */
+  for(const p of plants){
+    const sway=Math.sin(now/1200+p.ph)*10*(.5+water.o2*.5);
+    const gc=mix(mix([20,70,40],[50,150,60],light*.8+.2),[110,100,60],water.turb*.5);
+    g.strokeStyle=rgb(mix(gc,[30,60,30],p.g*.5)); g.lineWidth=p.w; g.lineCap='round';
+    for(let k=0;k<p.n;k++){ const off=(k-p.n/2)*5, hh=p.h*(.6+.4*((k+1)/p.n)), bx=p.x+off;
+      g.beginPath(); g.moveTo(bx,bedY+4); g.quadraticCurveTo(bx+sway*.6,bedY-hh*.5,bx+sway+off,bedY-hh); g.stroke(); }
+  }
+}
+function drawSurface(light,now,sY,col){
+  if(bedY-sY<3) return;                       // dry pond: no surface
+  g.beginPath(); g.moveTo(poolL,sY);
+  for(let x=poolL;x<=poolR;x+=8) g.lineTo(x,sY+Math.sin(x*.04+now/500)*2+Math.sin(x*.013+now/900)*1.5);
+  g.strokeStyle=`rgba(255,255,255,${.25+light*.35})`; g.lineWidth=2; g.stroke();
+  // sky reflection tint along the top
+  const rg=g.createLinearGradient(0,sY,0,sY+50); rg.addColorStop(0,`rgba(${mix([20,30,60],[200,230,255],light).join(',')},.35)`); rg.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle=rg; g.fillRect(poolL,sY,poolR-poolL,50);
+}
+function drawTurbidity(sY,col,now){
+  // fog thickens with depth; floating mud particles
+  const a=water.turb;
+  const fg=g.createLinearGradient(0,sY,0,bedY); fg.addColorStop(0,rgb([120,105,60],a*.15)); fg.addColorStop(1,rgb([90,80,45],a*.7));
+  g.fillStyle=fg; g.fillRect(poolL,sY,poolR-poolL,H-sY);
+  const n=Math.floor(a*60); while(motes.length<n) motes.push({x:rnd(poolL,poolR),y:rnd(sY,bedY),v:rnd(2,8),r:rnd(.8,2)});
+  while(motes.length>n) motes.pop();
+  g.fillStyle=rgb([180,160,110],.45); for(const m of motes){ m.x+=Math.sin(now/1000+m.y)*.2; m.y+=m.v*.01; if(m.y>bedY){m.y=sY+5;} g.fillRect(m.x,Math.max(m.y,sY),m.r,m.r); }
+}
+
+/* ---------- 8. BUBBLES & FOOD ------------------------------------- */
+function updateBubbles(dt,sY){
+  if(Math.random()<(water.o2+(env.aer?1:0))*dt*14) bubbles.push({x:rnd(poolL+20,poolR-20),y:bedY,r:rnd(1.5,4),ph:rnd(0,6)});
+  for(const b of bubbles){ b.y-=(30+b.r*8)*dt; b.x+=Math.sin(b.y*.05+b.ph)*.3; }
+  bubbles=bubbles.filter(b=>b.y>sY);
+}
+function drawBubbles(){ g.strokeStyle='rgba(255,255,255,.55)'; g.lineWidth=1; for(const b of bubbles){ g.beginPath(); g.arc(b.x,b.y,b.r,0,6.283); g.stroke(); } }
+/* ---------- 8b. FEED SYSTEM ----------------------------------------
+   THREE auto-feeders hang over the KEY FEEDING AREAS (FEEDER.xs = fraction of pond width) so every fish has
+   one nearby and little feed is missed. Each feeding = every feeder dispenses once (perFeeder portion).
+   In the real world you cannot count pellets, so the dashboard counts FEEDINGS (feedStats.times) and grams.
+   Pellets are only the visual stand-in: 1 simulated pellet = PELLET_G grams.
+   Feed that sinks past vanishFrac of the water depth un-eaten disappears and is stored in the variable
+   'wastedFeed' (grams, for reference); it also rots -> ammonia / oxygen loss / turbidity (env.waste).   */
+const FEEDER={ times:CFG.feedTimes, xs:[.2,.5,.8], perFeeder:4, vanishFrac:.35 };
+const PELLET_G=5;                    // grams represented by one simulated pellet
+let wastedFeed=0, dispensing=0, lastH=-1;
+const feedStats={times:0,dispensedG:0,eatenG:0,wastedG:0};   // times = number of feedings
+function throwPellets(x0,y0,vx,n){ for(let i=0;i<n;i++) food.push({x:x0+rnd(-6,6),y:y0,vx:vx+rnd(-40,40),vy:rnd(0,30),dead:false}); feedStats.dispensedG+=n*PELLET_G; }
+function dispenseFeed(){                       // called by the schedule or the 'Feed now' button
+  FEEDER.xs.forEach(fx=>throwPellets(W*fx,landY-56,0,FEEDER.perFeeder));
+  feedStats.times++; dispensing=1.2; feedAlert=10;          // fish hear/feel the feeder and get excited
+}
+function manualFeed(){ const n=Math.round(CFG.feedPerDose*P.manualOverfeed); for(let i=0;i<n;i++) throwPellets(rnd(poolL+40,poolR-40),landY-30,0,1); feedStats.times++; feedAlert=10; } // farmer overfeeds by hand
+cv.addEventListener('pointerdown',e=>{ if(e.clientX>270||e.clientY>H*.6) { throwPellets(e.clientX,landY-30,0,5); feedStats.times++; feedAlert=10; } });  // click = hand feeding
+function updateFood(dt,sY){
+  for(const p of food){
+    if(p.y<sY){ p.vy+=500*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; if(p.y>=sY){ p.vx*=.15; p.vy=20; } }   // flying
+    else { p.vx*=1-dt*2; p.x+=p.vx*dt; p.vy=lerp(p.vy,18,dt*3); p.y+=p.vy*dt; }                    // sinking
+    p.x=clamp(p.x,poolL+4,poolR-4);
+    if(!p.dead&&p.y>=sY&&(p.y>sY+(bedY-sY)*FEEDER.vanishFrac+10||p.y>=bedY-3)){ p.dead=true; wastedFeed+=PELLET_G; feedStats.wastedG+=PELLET_G; env.waste+=P.wasteUnit; }
+  }
+  food=food.filter(p=>!p.dead);
+}
+function drawFood(){ g.fillStyle='#d9a45b'; for(const p of food){ g.beginPath(); g.arc(p.x,p.y,2.4,0,6.283); g.fill(); } /* SPRITE HOOK: SPRITES.food */ }
+
+/* ---------- 8c. FEEDER + SENSORS (visible only WITH the prototype) -------------------
+   ******************  PROTEUS SENSORS  ******************
+   The 4 probes (DO, pH, turbidity, level) and their LEDs are the on-screen twins of the real sensors:
+     GREEN blink = all fine | RED blink = about to go bad (or already bad, faster blink).
+   sensorSnapshot() is what your Proteus/farmer-dashboard/WhatsApp/SMS pipeline should consume.      */
+let grades=[0,0,0,0], sensState=makeSensorState(), ledPrev=[false,false,false,false], audioCtx=null, lastWorst=0, lastPush=0;
+const GRADE_NAME=['OK','WARNING','CRITICAL'];
+function sensorSnapshot(){ return { time:new Date().toISOString(), mode,
+  readings:{ oxygen_mgL:+env.o2.toFixed(2), pH:+env.ph.toFixed(2), turbidity_NTU:+env.turb.toFixed(1), ammonia_mgL:+env.tan.toFixed(2), waterLevel_pct:+(env.level*100).toFixed(0) },
+  status:Object.fromEntries(SENS.map((x,i)=>[x.k,GRADE_NAME[grades[i]]])), worst:GRADE_NAME[Math.max(...grades)],
+  feed:{...feedStats} }; }
+function onSensorUpdate(snap){ /* HOOK (every second): push snap to your farmer dashboard, e.g. WebSocket.send(JSON.stringify(snap)) */ }
+async function sendAlert(snap){
+  /* HOOK (only when the worst status CHANGES, e.g. OK -> WARNING): notify the farmer.
+     Browsers must NOT hold WhatsApp/SMS secrets, so post to YOUR server and let it send the messages:
+       fetch('https://YOUR-SERVER/api/pond-alert',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(snap)});
+     Server side: forward to the farmer dashboard (WebSocket), WhatsApp (Meta WhatsApp Cloud API or Twilio),
+     SMS (Twilio / Africa's Talking / any gateway).                                                      */
+}
+function beep(freq){ if(!$('snd').checked) return; try{ audioCtx=audioCtx||new AudioContext(); const o=audioCtx.createOscillator(),v=audioCtx.createGain();
+  o.frequency.value=freq; v.gain.value=.04; o.connect(v); v.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+.08); }catch(e){} }
+function drawSystem(light,now,sY){
+  if(mode!=='proto') return;
+  const by=landY-110, cx=W*.5, steel=rgb(mix([40,45,52],[150,158,168],light*.7+.3));
+  g.fillStyle=steel; g.fillRect(poolL-6,by,poolR-poolL+12,6); g.fillRect(poolL-6,by,6,landY-by); g.fillRect(poolR,by,6,landY-by);   // gantry
+  dispensing=Math.max(0,dispensing-.016);
+  FEEDER.xs.forEach(fx=>{ const cx=W*fx;                         // one hopper per key feeding area
+    const cg=g.createLinearGradient(cx-18,0,cx+18,0); cg.addColorStop(0,'#7d8892'); cg.addColorStop(.4,'#e4eaef'); cg.addColorStop(1,'#5f6a74');
+    g.fillStyle=cg; g.fillRect(cx-18,by+6,36,38); g.beginPath(); g.ellipse(cx,by+6,18,5,0,0,6.283); g.fill();
+    g.fillStyle='#5f6a74'; g.beginPath(); g.moveTo(cx-18,by+44); g.lineTo(cx-5,by+54); g.lineTo(cx+5,by+54); g.lineTo(cx+18,by+44); g.fill();
+    g.fillStyle=dispensing>0?'#ffb020':'#3ddc84'; g.beginPath(); g.arc(cx,by+25,4,0,6.283); g.fill(); });
+  // sensor probes hanging into the water, each with a status LED
+  [.1,.35,.65,.9].forEach((fx,i)=>{ const sx=W*fx, gr=grades[i], period=gr===0?1.6:gr===1?.6:.25, on=((now/1000)%period)<(gr===0?.15:period/2);
+    g.fillStyle=steel; g.fillRect(sx-1,by+6,2,Math.max(10,sY+28-by-6)); g.fillStyle='#d8c85a'; g.fillRect(sx-4,Math.max(by+16,sY+28),8,9);   // rod + probe head
+    g.fillStyle='#222'; g.fillRect(sx-10,by-14,20,14);
+    g.save(); g.fillStyle=on?(gr===0?'#3ddc84':'#ff3b30'):'#333'; if(on){ g.shadowColor=gr===0?'#3ddc84':'#ff3b30'; g.shadowBlur=14; }
+    g.beginPath(); g.arc(sx,by-7,4,0,6.283); g.fill(); g.restore();
+    g.fillStyle='#fff'; g.font='10px system-ui'; g.textAlign='center'; g.fillText(SENS[i].n,sx,by-18);
+    if(on&&!ledPrev[i]) beep(gr===0?660:gr===1?880:1200); ledPrev[i]=on; });
+}
+
+/* ---------- 9. ANALYSIS (button): mortality with vs without the system ---------- */
+function runAnalysis(){
+  const days=14, runs=20, out={};
+  for(const sys of [false,true]){ let acc=null, causes={};
+    for(let i=0;i<runs;i++){ const r=runScenario(sys,100+i,days); acc=acc?acc.map((v,k)=>v+r.curve[k]):r.curve.slice(); for(const c in r.causes) causes[c]=(causes[c]||0)+r.causes[c]; }
+    out[sys?'with':'without']={curve:acc.map(v=>v/runs*100),causes}; }
+  const c=$('ch').getContext('2d'), w=340, h=190, L=34, B=24; c.clearRect(0,0,w,h);
+  c.font='10px system-ui'; c.fillStyle='#9fb6bf'; c.strokeStyle='#355'; c.textAlign='right';
+  for(let p=0;p<=100;p+=25){ const y=h-B-(h-B-8)*p/100; c.beginPath(); c.moveTo(L,y); c.lineTo(w-6,y); c.stroke(); c.fillText(p+'%',L-4,y+3); }
+  c.textAlign='center'; for(let d=0;d<=days;d+=2) c.fillText('day '+d,L+(w-L-6)*d/days,h-8);
+  [['without','#ff6b5a'],['with','#3ddc84']].forEach(([k,col])=>{ c.strokeStyle=col; c.lineWidth=2.5; c.beginPath();
+    out[k].curve.forEach((v,i,a)=>{ const x=L+(w-L-6)*i/(a.length-1), y=h-B-(h-B-8)*v/100; i?c.lineTo(x,y):c.moveTo(x,y); }); c.stroke(); });
+  const top=o=>Object.entries(o).sort((a,b)=>b[1]-a[1]).map(([k,v])=>k).slice(0,2).join(', ')||'none';
+  const fw=out.without.curve.at(-1), fs=out.with.curve.at(-1);
+  $('anaTxt').innerHTML=`<span style="color:#ff6b5a">Without system: ${fw.toFixed(0)}% mortality</span> (main causes: ${top(out.without.causes)})<br>`+
+    `<span style="color:#3ddc84">With system: ${fs.toFixed(0)}% mortality</span> (main causes: ${top(out.with.causes)})<br>`+
+    `<small>Average of ${runs} simulated ponds. Assumptions are in runScenario() and P{}.</small>`;
+  $('ana').hidden=false;
+}
+$('bAna').onclick=runAnalysis; $('anaX').onclick=()=>{ $('ana').hidden=true; };
+
+/* ---------- 10. UI + MAIN LOOP ------------------------------------ */
+let mode='proto';                    // 'proto' = WITH prototype | 'natural' = WITHOUT
+function setMode(m){ mode=m; $('mode').value=m; for(const k in S) S[k].disabled=(m!=='proto'); sensState=makeSensorState(); grades=[0,0,0,0]; }
+$('mode').onchange=e=>setMode(e.target.value);
+$('bFeed').onclick=()=>mode==='proto'?dispenseFeed():manualFeed();
+function restock(){ fish.length=0; for(let i=0;i<CFG.N_FISH;i++) spawnFish(); stats.dead=0; stats.causes={}; food=[]; poop.length=0; wastedFeed=0; Object.assign(feedStats,{times:0,dispensedG:0,eatenG:0,wastedG:0});
+  Object.assign(env,{level:.8,temp:26,o2:8,ph:7.2,tan:.3,turb:12,waste:0,aer:false,pump:false,exch:false}); }
+$('bRestock').onclick=restock;
+$('bExch').onclick=()=>{ env.tan*=.35; env.waste*=.35; poop.length=0; };   // stands in for the farmer's water exchange
+window.PondAPI={ setPotentiometers, setMode, getSensors:sensorSnapshot, env, stats, feedStats };   // handy for your team
+
+function protoEnv(dt){   // WITH prototype: the potentiometers decide, but less water => less oxygen
+  const dH=dt*24/300, decay=P.wasteDecay*env.waste, vol=Math.max(env.level,.12);       // excreta + rotting feed keep acting in prototype mode
+  env.waste=Math.max(0,env.waste-decay*dH); env.tan=Math.max(0,env.tan+(.4*decay/vol-P.nitrif*env.tan)*dH);
+  env.level=lerp(env.level,target.level,dt*1.2);
+  env.turb=lerp(env.turb,clamp(target.turb*100+12*env.waste,0,100),dt*1.2);       // more excreta => murkier
+  env.ph=lerp(env.ph,clamp(target.ph*14-.15*env.tan,0,14),dt*1.2);                // more ammonia/CO2 => lower pH
+  const lvF=.25+.75*Math.min(1,env.level/.5);                  // level <-> oxygen link
+  env.o2=lerp(env.o2,target.o2*12*lvF,dt*1.2);
+  env.temp=25+(1-env.level)*3; env.aer=false;
+}
+let last=performance.now();
+function frame(now){
+  const dt=Math.min((now-last)/1000,.05); last=now;
+  const t=timeOfDay(now), light=lightLevel(t), hour=(t*24+6)%24;
+  const alive=fish.filter(f=>f.state!=='dead'&&f.state!=='dying').length;
+  if(mode==='proto') protoEnv(dt); else stepEnv(env,dt,t,alive,Math.random);
+  water.turb=env.turb/100; water.ph=env.ph/14; water.o2=env.o2/12; water.level=env.level;
+  const sY=surfaceY(), col=waterColor(light);
+
+  if(lastH>=0&&crossedHour(lastH,hour,mode==='proto'?FEEDER.times:CFG.manualTimes)) mode==='proto'?dispenseFeed():manualFeed();
+  lastH=hour;
+  if(mode==='proto'){ grades=updateSensors(sensState,env,dt*24/300);
+    const worst=Math.max(...grades); if(worst!==lastWorst){ lastWorst=worst; sendAlert(sensorSnapshot()); }
+    if(now-lastPush>1000){ lastPush=now; onSensorUpdate(sensorSnapshot()); } }
+
+  updateBubbles(dt,sY); updateFood(dt,sY); updatePoop(dt,sY);
+  lightNow=light; feedAlert=Math.max(0,feedAlert-dt);
+  { const ts=mode==='proto'?FEEDER.times:CFG.manualTimes; if(Math.min(...ts.map(x=>((x-hour)+24)%24))<.6) feedAlert=Math.max(feedAlert,1); }   // fish anticipate feeding time
+  for(const f of fish) updateFish(f,dt,sY);
+
+  g.clearRect(0,0,W,H);
+  drawSky(t,light,now); drawLand(light);
+  g.save(); g.beginPath(); g.rect(poolL,landY,poolR-poolL,H-landY); g.clip();      // pond opening (plants stay even when water is gone)
+  drawWaterBack(light,now,sY,col); drawPlants(light,now); drawPoop();
+  for(const f of fish.filter(f=>f.state!=='dead')) drawFish(f,light);
+  drawBubbles(); drawFood(); drawTurbidity(sY,col,now);
+  g.fillStyle=`rgba(0,5,20,${(1-light)*.45})`; g.fillRect(poolL,sY,poolR-poolL,H);
+  g.restore();
+  for(const f of fish.filter(f=>f.state==='dead')) drawFish(f,light);   // dead fish stay on view
+  drawSurface(light,now,sY,col);
+  g.fillStyle=rgb(mix([14,10,10],[70,50,34],light)); g.fillRect(0,landY,poolL,H-landY); g.fillRect(poolR,landY,W-poolR,H-landY);
+  drawSystem(light,now,sY);
+  g.fillStyle=`rgba(5,10,40,${(1-light)*.25})`; g.fillRect(0,0,W,H);
+
+  // HUD text
+  const hh=Math.floor(hour), mm=Math.floor((hour-hh)*60);
+  $('clock').textContent=`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}  ${light<.08?'Night':t<.12?'Morning':t<.4?'Day':t<.5?'Evening':'Night'}`;
+  if(mode!=='proto'){ S.T.value=env.turb; S.P.value=env.ph; S.O.value=env.o2; S.L.value=env.level*100; }
+  $('vT').textContent=Math.round(env.turb)+' NTU'; $('vP').textContent=env.ph.toFixed(1);
+  $('vO').textContent=env.o2.toFixed(1)+' mg/L now'; $('vL').textContent=Math.round(env.level*100)+'%';
+  const n=fish.length, mort=n?stats.dead/n*100:0;
+  $('status').innerHTML=`Alive ${alive}/${n} &middot; dead ${stats.dead} (${mort.toFixed(0)}% mortality)<br>Fed ${feedStats.times} times (${feedStats.dispensedG} g) &middot; wasted ${wastedFeed} g<br>Excreta in water ${env.waste.toFixed(1)} &middot; ammonia ${env.tan.toFixed(1)} mg/L<br>`+
+    (mode==='proto'?`Sensors: ${GRADE_NAME[Math.max(...grades)]}. 3 auto-feeders. Click the pond to hand-feed.`:'No prototype: water changes naturally. Hand feeding at 08:00 and 17:00.');
+  requestAnimationFrame(frame);
+}
+resize(); readSliders(); setMode('proto');
+env.level=target.level; env.turb=target.turb*100; env.ph=target.ph*14; env.o2=target.o2*12;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
