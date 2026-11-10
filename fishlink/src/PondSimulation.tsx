@@ -1,9 +1,14 @@
 import React, { useState } from "react";
 
 /**
- * Integration contract for the FishLink pond-animation team.
- * Replace ONLY the contents of this component with the actual animation.
- * The My Farms navigation and the rest of FishLink do not need to change.
+ * FishLink pond simulation.
+ *
+ * The animated pond is a separate web page (pond-sim.html) that is shown inside this page
+ * in a "frame" (an <iframe>). FishLink gives it the selected pond's details, and it does the rest.
+ *
+ * ONE-TIME SETUP
+ *   1. Copy pond-sim.html into your project's  public  folder  (so it is available at /pond-sim.html).
+ *   2. (Optional) put the address of the live-sensor backend in BACKEND_STREAM_URL below.
  */
 export type SimulationFarm = {
   id: string;
@@ -26,10 +31,33 @@ type Props = {
   ponds: SimulationPond[];
 };
 
+/** Where the simulation page is. If you put the file in  public/simulation/pond-sim.html  write "/simulation/pond-sim.html". */
+const SIMULATION_PAGE = "/pond-sim.html";
+
+/**
+ * Live sensor data.
+ *  - "" (empty)  -> the simulation listens to the sensors' MQTT broker directly (works with no backend).
+ *  - "https://your-backend.onrender.com/stream" -> it listens to your Flask backend instead
+ *    (the backend also sends the SMS alerts). Remember to set CORS_ORIGIN on the backend.
+ */
+const BACKEND_STREAM_URL = "";
+
 export default function PondSimulation({ farms, ponds }: Props) {
   const [selectedPondId, setSelectedPondId] = useState(ponds[0]?.id ?? "");
   const selectedPond = ponds.find((pond) => pond.id === selectedPondId);
   const selectedFarm = farms.find((farm) => farm.id === selectedPond?.farmId);
+
+  // The web address of the simulation, with the selected pond's details added on the end.
+  const params = new URLSearchParams();
+  if (selectedPond) {
+    params.set("population", String(selectedPond.population)); // how many fish to show
+    params.set("pond", selectedPond.name);
+  }
+  if (BACKEND_STREAM_URL) {
+    params.set("stream", BACKEND_STREAM_URL);
+  }
+  const query = params.toString();
+  const simulationUrl = query ? `${SIMULATION_PAGE}?${query}` : SIMULATION_PAGE;
 
   return (
     <div className="pond-sim-page">
@@ -38,10 +66,10 @@ export default function PondSimulation({ farms, ponds }: Props) {
           <span className="pond-sim-eyebrow">FISHLINK · INTERACTIVE LAB</span>
           <h2>Live Pond Simulation</h2>
           <p>
-            Explore a virtual fish pond and observe its environment. The animated
-            simulation will be connected here by the FishLink simulation team.
+            Explore a virtual fish pond and observe its environment. The water, the fish and
+            the alerts follow the pond sensors in real time.
           </p>
-          <div className="pond-sim-status"><span /> Simulation workspace ready for integration</div>
+          <div className="pond-sim-status"><span /> Live simulation connected</div>
         </div>
         <div className="pond-sim-hero-art" aria-hidden="true">🐟</div>
       </section>
@@ -52,7 +80,7 @@ export default function PondSimulation({ farms, ponds }: Props) {
             <h3>Simulation environment</h3>
             <p>Select a registered pond to provide context to the simulation.</p>
           </div>
-          <span className="pond-sim-tag">ANIMATION SLOT</span>
+          <span className="pond-sim-tag">LIVE SIMULATION</span>
         </div>
 
         {ponds.length > 0 ? (
@@ -70,8 +98,8 @@ export default function PondSimulation({ farms, ponds }: Props) {
           </div>
         ) : (
           <div className="pond-sim-empty-context">
-            No registered ponds yet. You can still build and test the animation independently;
-            pond data will become available here when a pond is added in My Farms.
+            No registered ponds yet. The simulation still runs with a default pond;
+            pond data will appear here when a pond is added in My Farms.
           </div>
         )}
 
@@ -85,39 +113,24 @@ export default function PondSimulation({ farms, ponds }: Props) {
         )}
       </section>
 
-      {/*
-        FUTURE ANIMATION MOUNT POINT
-        The simulation developer can replace this placeholder with their React
-        animation component, canvas, Three.js scene, or a secured iframe.
-        Props already available above: selectedPond, selectedFarm, farms, ponds.
-        Keep the outer .pond-sim-stage container so the page layout remains stable.
-      */}
+      {/* The animation. Keep this outer section: the page layout depends on it. */}
       <section className="pond-sim-stage" id="fishlink-pond-simulation-stage">
-        <div className="pond-sim-stage-inner">
-          <div className="pond-sim-stage-icon">◉</div>
-          <span className="pond-sim-stage-label">ANIMATION VIEWPORT</span>
-          <h3>Your interactive pond will appear here</h3>
-          <p>
-            This space is intentionally reserved for the standalone pond animation.
-            No artificial animation or fish-growth calculation is running in this page.
-          </p>
-          <div className="pond-sim-stage-specs">
-            <span>Responsive viewport</span><span>React / Canvas / Three.js ready</span><span>FishLink pond data available</span>
-          </div>
-        </div>
-      </section>
-
-      <section className="pond-sim-integration-note">
-        <span>↗</span>
-        <div>
-          <strong>For the simulation developer</strong>
-          <p>
-            Build the animation as an independent component and mount it inside
-            <code> #fishlink-pond-simulation-stage </code> in this file. Use the
-            selected pond object as the initial data source. See the integration
-            guide included with this project.
-          </p>
-        </div>
+        <iframe
+          key={selectedPond?.id ?? "no-pond"} // restarts the simulation when another pond is chosen
+          src={simulationUrl}
+          title="Live pond simulation"
+          loading="lazy"
+          allowFullScreen
+          style={{
+            display: "block",
+            width: "100%",
+            height: "70vh",
+            minHeight: 420,
+            border: 0,
+            borderRadius: 16,
+            background: "#0a1a24",
+          }}
+        />
       </section>
     </div>
   );
