@@ -113,7 +113,7 @@ type AppData = {
 };
 
 const makeId = () =>
-  globalThis.crypto?.randomUUID?.() ??
+  (globalThis.crypto as { randomUUID?: () => string } | undefined)?.randomUUID?.() ??
   `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -1017,7 +1017,7 @@ export default function App() {
       alignItems: "center",
 
       backgroundImage:
-        "linear-gradient(180deg, rgba(0,35,62,.35), rgba(0,31,49,.08) 45%, rgba(0,30,43,.48)), url('/images/fishlink-pond.png')",
+        `linear-gradient(180deg, rgba(0,35,62,.35), rgba(0,31,49,.08) 45%, rgba(0,30,43,.48)), url('${process.env.PUBLIC_URL || ""}/images/fishlink-pond.png')`,
 
       backgroundSize: "cover",
       backgroundPosition: "center",

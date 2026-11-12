@@ -204,7 +204,7 @@ strong {
   color: white;
   background:
     linear-gradient(180deg, rgba(3, 40, 67, 0.18), rgba(3, 34, 57, 0.28)),
-    url('/images/fishlink-pond.png') center / cover no-repeat,
+    url('../public/images/fishlink-pond.png') center / cover no-repeat,
     linear-gradient(160deg, #075b7e, #062c48 75%);
 }
 
@@ -1800,3 +1800,23 @@ strong {
 .pond-sim-integration-note code { color: #087d72; font-size: 10px; }
 @media (max-width: 760px) { .pond-sim-hero { padding: 21px 19px; } .pond-sim-hero-art { flex-basis: 66px; width: 66px; height: 66px; border-radius: 20px; font-size: 35px; } .pond-sim-context-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pond-sim-stage { min-height: 330px; padding: 20px 15px; } }
 @media (max-width: 480px) { .pond-sim-hero-art { display: none; } .pond-sim-select-row { grid-template-columns: 1fr; gap: 7px; } .pond-sim-section-heading { flex-direction: column; } .pond-sim-context-grid { gap: 7px; } .pond-sim-context-grid > div { padding: 9px; } .pond-sim-context-grid strong { font-size: 11px; } }
+
+.pond-sim-status.live span { background: #54e5ad; }
+.pond-sim-status.waiting span,
+.pond-sim-status.stale span { background: #ffd37d; box-shadow: 0 0 0 4px rgba(255,211,125,.13); }
+.pond-sim-status.offline span,
+.pond-sim-status.error span { background: #ff8b72; box-shadow: 0 0 0 4px rgba(255,139,114,.13); }
+.pond-sim-frame-wrap { display: grid; gap: 9px; width: 100%; min-width: 0; }
+.pond-sim-live-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border: 1px solid #dce8e8; border-radius: 10px; color: #526c7c; background: #fff; font-size: 10px; font-weight: 800; letter-spacing: .3px; }
+.pond-sim-live-strip small { overflow: hidden; max-width: 55%; color: #718692; font-weight: 500; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.pond-sim-live-strip.live { border-color: #bcebdc; color: #07845f; background: #f1fcf7; }
+.pond-sim-live-strip.waiting,
+.pond-sim-live-strip.stale { border-color: #f0dfb0; color: #8a6714; background: #fffdf4; }
+.pond-sim-live-strip.offline,
+.pond-sim-live-strip.error { border-color: #f1cfc6; color: #a7432e; background: #fff8f6; }
+.pond-sim-frame { display: block; width: 100%; height: min(72vh, 720px); min-height: 430px; border: 0; border-radius: 12px; background: #0a1a24; }
+@media (max-width: 760px) {
+  .pond-sim-frame { height: 58vh; min-height: 340px; }
+  .pond-sim-live-strip { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .pond-sim-live-strip small { max-width: 100%; }
+}

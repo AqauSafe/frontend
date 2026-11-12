@@ -204,7 +204,7 @@ strong {
   color: white;
   background:
     linear-gradient(180deg, rgba(3, 40, 67, 0.18), rgba(3, 34, 57, 0.28)),
-    url('/images/fishlink-pond.png') center / cover no-repeat,
+    url('../public/images/fishlink-pond.png') center / cover no-repeat,
     linear-gradient(160deg, #075b7e, #062c48 75%);
 }
 

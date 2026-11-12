@@ -1,6 +1,20 @@
 import React, { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import PondSimulation from "./PondSimulation";
+import {
+  ApiError,
+  api,
+  clearSession,
+  hasSession,
+} from "./api/client";
+import type {
+  ApiFarm,
+  ApiFeeding,
+  ApiPond,
+  ApiReading,
+  ApiUser,
+  BootstrapData,
+} from "./api/types";
 type Language = "en" | "ha" | "yo" | "pcm";
 
 type Track =
@@ -59,6 +73,7 @@ type Reading = {
   oxygen: number;
   ph: number;
   level: number;
+  turbidityNtu?: number | null;
   date: string;
 };
 
@@ -94,7 +109,7 @@ type AppData = {
 };
 
 const makeId = () =>
-  globalThis.crypto?.randomUUID?.() ??
+  (globalThis.crypto as { randomUUID?: () => string } | undefined)?.randomUUID?.() ??
   `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -200,6 +215,120 @@ const initialData: AppData = {
   readings: [],
   listings: starterListings,
   messages: starterMessages,
+};
+
+const LOCAL_IMPORT_KEY = "fishlink-local-import-v1";
+
+const toNumber = (
+  value: string | number | null | undefined,
+  fallback = 0
+): number => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const toOptionalNumber = (
+  value: string | number | null | undefined
+): number | null => {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const mapApiUser = (user: ApiUser): User => ({
+  name: user.name,
+  email: user.email,
+  phone: user.phone,
+  role: user.role,
+  otherRole: user.otherRole || undefined,
+  guest: Boolean(user.isGuest),
+});
+
+const mapApiFarm = (farm: ApiFarm): Farm => ({
+  id: farm.id,
+  name: farm.name,
+  location: farm.location,
+});
+
+const mapApiPond = (pond: ApiPond): Pond => ({
+  id: pond.id,
+  farmId: pond.farmId,
+  name: pond.name,
+  population: toNumber(pond.population),
+  length: toNumber(pond.length),
+  width: toNumber(pond.width),
+  status: pond.status,
+});
+
+const mapApiFeeding = (feeding: ApiFeeding): Feeding => ({
+  id: feeding.id,
+  pondId: feeding.pondId,
+  amount: toNumber(feeding.amount),
+  date: feeding.date || feeding.fedAt || new Date().toISOString(),
+});
+
+const mapApiReading = (reading: ApiReading): Reading => ({
+  id: reading.id,
+  pondId: reading.pondId,
+  temperature: toNumber(reading.temperature),
+  oxygen: toNumber(reading.oxygen),
+  ph: toNumber(reading.ph),
+  level: toNumber(reading.level),
+  turbidityNtu: toOptionalNumber(reading.turbidityNtu),
+  date: reading.date || reading.recordedAt || new Date().toISOString(),
+});
+
+const normaliseLanguage = (language: string | undefined): Language => {
+  if (language === "ha" || language === "yo" || language === "pcm") {
+    return language;
+  }
+  return "en";
+};
+
+const bootstrapToAppData = (bootstrap: BootstrapData): Partial<AppData> => ({
+  user: mapApiUser(bootstrap.user),
+  language: normaliseLanguage(bootstrap.language),
+  farms: (bootstrap.farms || []).map(mapApiFarm),
+  ponds: (bootstrap.ponds || []).map(mapApiPond),
+  feedings: (bootstrap.feedings || []).map(mapApiFeeding),
+  readings: (bootstrap.readings || []).map(mapApiReading),
+});
+
+const hasLocalRecords = (data: AppData): boolean =>
+  data.farms.length > 0 ||
+  data.ponds.length > 0 ||
+  data.feedings.length > 0 ||
+  data.readings.length > 0;
+
+const loadLocalImportData = (fallback: AppData): AppData | null => {
+  try {
+    const saved = localStorage.getItem(LOCAL_IMPORT_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved) as AppData;
+      if (hasLocalRecords(parsed)) return parsed;
+    }
+  } catch {
+    // Ignore a malformed local backup.
+  }
+  return hasLocalRecords(fallback) ? fallback : null;
+};
+
+const describeError = (error: unknown): string => {
+  if (error instanceof ApiError) {
+    if (error.details && typeof error.details === "object") {
+      const values = Object.values(error.details as Record<string, unknown>);
+      const first = values.find((value) => typeof value === "string");
+      if (typeof first === "string") return first;
+      for (const value of values) {
+        if (Array.isArray(value) && typeof value[0] === "string") {
+          return value[0];
+        }
+      }
+    }
+    return error.message;
+  }
+  if (error instanceof Error) return error.message;
+  return "Something went wrong. Please try again.";
 };
 
 const translations: Record<Language, Record<string, string>> = {
@@ -368,10 +497,15 @@ export default function App() {
     localStorage.getItem("fishlink-remembered-email") || ""
   );
 
+  const [busy, setBusy] = useState(false);
+  const [localImportDone, setLocalImportDone] = useState(false);
+  const [localSnapshot] = useState<AppData>(() => readSavedData());
+
   const t = (key: string) =>
     translations[data.language]?.[key] ?? translations.en[key] ?? key;
 
   useEffect(() => {
+    if (hasSession()) return;
     localStorage.setItem("fishlink-data-v2", JSON.stringify(data));
   }, [data]);
 
@@ -387,6 +521,47 @@ export default function App() {
 
   const update = (changes: Partial<AppData>) =>
     setData((old) => ({ ...old, ...changes }));
+
+  const backendUser = Boolean(data.user && !data.user.guest && hasSession());
+  const localImportData =
+    backendUser && !localImportDone
+      ? loadLocalImportData(localSnapshot)
+      : null;
+
+  useEffect(() => {
+    if (!hasSession()) return;
+
+    let cancelled = false;
+    setBusy(true);
+
+    if (hasLocalRecords(localSnapshot)) {
+      localStorage.setItem(LOCAL_IMPORT_KEY, JSON.stringify(localSnapshot));
+    }
+
+    api
+      .bootstrap()
+      .then((bootstrap) => {
+        if (cancelled) return;
+        setData((old) => ({ ...old, ...bootstrapToAppData(bootstrap) }));
+        localStorage.removeItem("fishlink-data-v2");
+        setPage("dashboard");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        clearSession();
+        setToast(describeError(error));
+        setPage("welcome");
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // The initial restore runs once; later data changes are handled by explicit actions.
+    // eslint-disable-next-line
+  }, []);
 
   const go = (next: Page) => {
     setPage(next);
@@ -432,8 +607,9 @@ export default function App() {
 
   // AUTHENTICATION
 
-  const handleAuth = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleAuth = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (busy) return;
 
     const form = new FormData(event.currentTarget);
 
@@ -470,32 +646,62 @@ export default function App() {
       localStorage.removeItem("fishlink-remembered-email");
     }
 
-    const user: User = {
-      name: name || email.split("@")[0],
-      email,
-      phone,
-      role:
+    setBusy(true);
+
+    try {
+      const auth =
         authMode === "register"
-          ? role
-          : data.user?.role || "Fish Farmer",
-      otherRole:
-        authMode === "register"
-          ? otherRole
-          : data.user?.otherRole,
-    };
+          ? await api.register({
+              name,
+              email,
+              password,
+              phone,
+              role,
+              otherRole,
+              language: data.language,
+            })
+          : await api.login(email, password);
 
-    update({ user });
+      let bootstrap: BootstrapData | null = null;
+      try {
+        bootstrap = await api.bootstrap();
+      } catch {
+        bootstrap = null;
+      }
 
-    go("dashboard");
+      setData((old) => ({
+        ...old,
+        user: mapApiUser(auth.user),
+        ...(bootstrap
+          ? bootstrapToAppData(bootstrap)
+          : { farms: [], ponds: [], feedings: [], readings: [] }),
+      }));
 
-    notify(
-      authMode === "register"
-        ? "Welcome to FishLink!"
-        : "Welcome back!"
-    );
+      if (hasLocalRecords(data)) {
+        localStorage.setItem(LOCAL_IMPORT_KEY, JSON.stringify(data));
+      }
+      localStorage.removeItem("fishlink-data-v2");
+      setLocalImportDone(false);
+
+      go("dashboard");
+
+      notify(
+        bootstrap
+          ? authMode === "register"
+            ? "Welcome to FishLink!"
+            : "Welcome back!"
+          : "Signed in, but your records could not be loaded yet."
+      );
+    } catch (error) {
+      notify(describeError(error));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const continueAsGuest = (role: Track = "Individual") => {
+    clearSession();
+
     update({
       user: {
         name: "Guest",
@@ -510,27 +716,92 @@ export default function App() {
     notify("You are exploring FishLink as a guest.");
   };
 
-  const logout = () => {
-    update({ user: null });
+  const logout = async () => {
+    if (busy) return;
+    const wasGuest = Boolean(data.user?.guest);
 
-    setShowPassword(false);
+    setBusy(true);
+    try {
+      await api.logout();
+    } catch {
+      clearSession();
+    } finally {
+      clearSession();
+      setShowPassword(false);
+      setLocalImportDone(false);
+      update({
+        user: null,
+        ...(wasGuest
+          ? {}
+          : { farms: [], ponds: [], feedings: [], readings: [] }),
+      });
+      go("welcome");
+      notify("You have logged out.");
+      setBusy(false);
+    }
+  };
 
-    go("welcome");
+  const importLocalRecords = async () => {
+    if (!localImportData || !backendUser || busy) return;
 
-    notify("You have logged out.");
+    const confirmed = window.confirm(
+      "Import the farm records saved in this browser into your backend account? " +
+        "Water levels are treated as percentages; older values recorded in metres cannot be converted automatically."
+    );
+    if (!confirmed) return;
+
+    setBusy(true);
+    try {
+      const summary = await api.importData({
+        farms: localImportData.farms,
+        ponds: localImportData.ponds,
+        feedings: localImportData.feedings,
+        readings: localImportData.readings,
+      });
+      const bootstrap = await api.bootstrap();
+      setData((old) => ({ ...old, ...bootstrapToAppData(bootstrap) }));
+      localStorage.removeItem(LOCAL_IMPORT_KEY);
+      setLocalImportDone(true);
+      notify(
+        `Imported ${summary.farms.created} farms, ${summary.ponds.created} ponds, ` +
+          `${summary.feedings.created} feedings and ${summary.readings.created} readings.`
+      );
+    } catch (error) {
+      notify(describeError(error));
+    } finally {
+      setBusy(false);
+    }
   };
 
   // FARM MANAGEMENT
-
-  const addFarm = (event: React.FormEvent<HTMLFormElement>) => {
+  const addFarm = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (busy) return;
 
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
 
     const name = String(form.get("farmName") || "").trim();
     const location = String(form.get("location") || "").trim();
 
     if (!name || !location) return;
+
+    if (backendUser) {
+      setBusy(true);
+      try {
+        const farm = mapApiFarm(await api.createFarm({ name, location }));
+        update({ farms: [...data.farms, farm] });
+        setSelectedFarm(farm.id);
+        setShowFarmForm(false);
+        formElement.reset();
+        notify("Farm added.");
+      } catch (error) {
+        notify(describeError(error));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
 
     const farm = {
       id: makeId(),
@@ -545,15 +816,17 @@ export default function App() {
     setSelectedFarm(farm.id);
     setShowFarmForm(false);
 
-    event.currentTarget.reset();
+    formElement.reset();
 
     notify("Farm added.");
   };
 
-  const addPond = (event: React.FormEvent<HTMLFormElement>) => {
+  const addPond = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (busy) return;
 
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
 
     const farmId = String(form.get("farmId") || "");
     const name = String(form.get("pondName") || "").trim();
@@ -569,6 +842,32 @@ export default function App() {
       width <= 0
     ) {
       notify("Enter valid pond information.");
+      return;
+    }
+
+    if (backendUser) {
+      setBusy(true);
+      try {
+        const pond = mapApiPond(
+          await api.createPond({
+            farmId,
+            name,
+            population,
+            length,
+            width,
+            status: "active",
+          })
+        );
+        update({ ponds: [...data.ponds, pond] });
+        setSelectedFarm(farmId);
+        setShowPondForm(false);
+        formElement.reset();
+        notify("Pond added.");
+      } catch (error) {
+        notify(describeError(error));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
 
@@ -589,17 +888,29 @@ export default function App() {
     setSelectedFarm(farmId);
     setShowPondForm(false);
 
-    event.currentTarget.reset();
+    formElement.reset();
 
     notify("Pond added.");
   };
 
-  const deleteFarm = (id: string) => {
+  const deleteFarm = async (id: string) => {
     if (!window.confirm("Delete this farm and its records?")) return;
 
     const pondIds = data.ponds
       .filter((pond) => pond.farmId === id)
       .map((pond) => pond.id);
+
+    if (backendUser) {
+      setBusy(true);
+      try {
+        await api.deleteFarm(id);
+      } catch (error) {
+        notify(describeError(error));
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+    }
 
     update({
       farms: data.farms.filter((farm) => farm.id !== id),
@@ -617,8 +928,20 @@ export default function App() {
     notify("Farm deleted.");
   };
 
-  const deletePond = (id: string) => {
+  const deletePond = async (id: string) => {
     if (!window.confirm("Delete this pond and its records?")) return;
+
+    if (backendUser) {
+      setBusy(true);
+      try {
+        await api.deletePond(id);
+      } catch (error) {
+        notify(describeError(error));
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+    }
 
     update({
       ponds: data.ponds.filter((pond) => pond.id !== id),
@@ -635,10 +958,12 @@ export default function App() {
 
   // PRODUCTION
 
-  const addFeeding = (event: React.FormEvent<HTMLFormElement>) => {
+  const addFeeding = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (busy) return;
 
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
 
     const pondId = String(form.get("pondId") || "");
     const amount = Number(form.get("amount"));
@@ -646,6 +971,28 @@ export default function App() {
 
     if (!pondId || amount <= 0) {
       notify("Choose a pond and enter a valid feed amount.");
+      return;
+    }
+
+    if (backendUser) {
+      setBusy(true);
+      try {
+        const feeding = mapApiFeeding(
+          await api.createFeeding({
+            pondId,
+            amount,
+            fedAt: new Date(date).toISOString(),
+          })
+        );
+        update({ feedings: [...data.feedings, feeding] });
+        setShowFeedForm(false);
+        formElement.reset();
+        notify("Feeding record saved.");
+      } catch (error) {
+        notify(describeError(error));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
 
@@ -663,37 +1010,71 @@ export default function App() {
 
     setShowFeedForm(false);
 
-    event.currentTarget.reset();
+    formElement.reset();
 
     notify("Feeding record saved.");
   };
 
   // WATER MONITORING
 
-  const addReading = (event: React.FormEvent<HTMLFormElement>) => {
+  const addReading = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (busy) return;
 
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
 
     const pondId = String(form.get("pondId") || "");
     const temperature = Number(form.get("temperature"));
     const oxygen = Number(form.get("oxygen"));
     const ph = Number(form.get("ph"));
     const level = Number(form.get("level"));
+    const rawTurbidity = String(form.get("turbidityNtu") || "").trim();
+    const turbidityNtu =
+      rawTurbidity === "" ? null : Number(rawTurbidity);
 
     if (
       !pondId ||
       [temperature, oxygen, ph, level].some(
         (value) => !Number.isFinite(value) || value < 0
-      )
+      ) ||
+      level > 100 ||
+      (turbidityNtu !== null &&
+        (!Number.isFinite(turbidityNtu) || turbidityNtu < 0))
     ) {
-      notify("Enter valid water readings.");
+      notify("Enter valid water readings. Water level must be 0–100%.");
+      return;
+    }
+
+    if (backendUser) {
+      setBusy(true);
+      try {
+        const reading = mapApiReading(
+          await api.createReading({
+            pondId,
+            temperature,
+            oxygen,
+            ph,
+            level,
+            turbidityNtu,
+            recordedAt: new Date().toISOString(),
+            clientId: makeId(),
+          })
+        );
+        update({ readings: [reading, ...data.readings] });
+        setShowReadingForm(false);
+        formElement.reset();
+        notify("Water reading saved.");
+      } catch (error) {
+        notify(describeError(error));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
 
     update({
       readings: [
-        ...data.readings,
         {
           id: makeId(),
           pondId,
@@ -701,14 +1082,16 @@ export default function App() {
           oxygen,
           ph,
           level,
+          turbidityNtu,
           date: new Date().toISOString(),
         },
+        ...data.readings,
       ],
     });
 
     setShowReadingForm(false);
 
-    event.currentTarget.reset();
+    formElement.reset();
 
     notify("Water reading saved.");
   };
@@ -940,7 +1323,7 @@ export default function App() {
       alignItems: "center",
 
       backgroundImage:
-        "linear-gradient(180deg, rgba(0,35,62,.35), rgba(0,31,49,.08) 45%, rgba(0,30,43,.48)), url('/images/fishlink-pond.png')",
+        `linear-gradient(180deg, rgba(0,35,62,.35), rgba(0,31,49,.08) 45%, rgba(0,30,43,.48)), url('${process.env.PUBLIC_URL || ""}/images/fishlink-pond.png')`,
 
       backgroundSize: "cover",
       backgroundPosition: "center",
@@ -1330,8 +1713,11 @@ export default function App() {
             <button
               className="button button-primary"
               type="submit"
+              disabled={busy}
             >
-              {authMode === "login"
+              {busy
+                ? "Connecting..."
+                : authMode === "login"
                 ? "Login"
                 : "Create Account"}
             </button>
@@ -1363,9 +1749,8 @@ export default function App() {
           </button>
 
           <div className="local-note">
-            FishLink prototype: account details and farm records
-            are stored locally in this browser. Secure authentication
-            and cross-device accounts require the backend.
+            Accounts and farm records are saved by the FishLink
+            backend. Guest mode stays local to this browser.
           </div>
         </section>
       </main>
@@ -1592,7 +1977,7 @@ export default function App() {
                         <Metric
                           icon="🌊"
                           label="Water Level"
-                          value={`${recentReadings[0].level} m`}
+                          value={`${recentReadings[0].level}%`}
                         />
                       </div>
                     )}
@@ -2267,13 +2652,26 @@ export default function App() {
                         </label>
 
                         <label>
-                          Water Level (m)
+                          Water Level (%)
 
                           <input
                             name="level"
                             type="number"
+                            min="0"
+                            max="100"
                             step="0.1"
                             required
+                          />
+                        </label>
+
+                        <label>
+                          Turbidity (NTU, optional)
+
+                          <input
+                            name="turbidityNtu"
+                            type="number"
+                            min="0"
+                            step="0.1"
                           />
                         </label>
                       </div>
@@ -2323,7 +2721,11 @@ export default function App() {
                           <small>
                             {reading.temperature}°C ·{" "}
                             {reading.oxygen} mg/L DO · pH{" "}
-                            {reading.ph} · {reading.level} m
+                            {reading.ph} · {reading.level}%
+                            {reading.turbidityNtu !== null &&
+                            reading.turbidityNtu !== undefined
+                              ? ` · ${reading.turbidityNtu} NTU`
+                              : ""}
                           </small>
                         </div>
                       </div>
@@ -2331,8 +2733,9 @@ export default function App() {
                   )}
 
                   <div className="notice">
-                    These readings are entered manually. ESP32 sensor
-                    integration can be added later.
+                    Readings saved to your account are available to the
+                    live pond visualization. Water level is stored as a
+                    percentage from 0 to 100.
                   </div>
                 </section>
               )}
@@ -2645,9 +3048,7 @@ export default function App() {
                   <span>Account type</span>
 
                   <strong>
-                    {data.user?.guest
-                      ? "Guest"
-                      : "Registered prototype"}
+                    {data.user?.guest ? "Guest" : "Registered account"}
                   </strong>
                 </div>
 
@@ -2678,9 +3079,20 @@ export default function App() {
                   Manage My Farms
                 </Button>
 
+                {localImportData && (
+                  <Button
+                    outline
+                    onClick={importLocalRecords}
+                    disabled={busy}
+                  >
+                    Import Local Records
+                  </Button>
+                )}
+
                 <button
                   className="button button-outline logout-full danger"
                   onClick={logout}
+                  disabled={busy}
                 >
                     {t("logout")}
                 </button>

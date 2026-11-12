@@ -1,10 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
-/**
- * Integration contract for the FishLink pond-animation team.
- * Replace ONLY the contents of this component with the actual animation.
- * The My Farms navigation and the rest of FishLink do not need to change.
- */
+import { usePondLive } from "./usePondLive";
+import type { LiveStatus } from "./usePondLive";
+
 export type SimulationFarm = {
   id: string;
   name: string;
@@ -26,33 +24,111 @@ type Props = {
   ponds: SimulationPond[];
 };
 
+const statusLabel: Record<LiveStatus, string> = {
+  idle: "No pond selected",
+  waiting: "Waiting for readings",
+  live: "Live",
+  stale: "Stale data",
+  offline: "Sensor offline",
+  error: "Telemetry unavailable",
+};
+
 export default function PondSimulation({ farms, ponds }: Props) {
   const [selectedPondId, setSelectedPondId] = useState(ponds[0]?.id ?? "");
+  const [frameReady, setFrameReady] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
   const selectedPond = ponds.find((pond) => pond.id === selectedPondId);
   const selectedFarm = farms.find((farm) => farm.id === selectedPond?.farmId);
+  const live = usePondLive(selectedPondId, Boolean(selectedPondId));
+  const reading =
+    live.reading && live.reading.pondId === selectedPondId ? live.reading : null;
+  const liveStatus: LiveStatus = reading
+    ? live.status
+    : live.status === "error"
+      ? "error"
+      : selectedPondId
+        ? "waiting"
+        : "idle";
+
+  useEffect(() => {
+    if (!ponds.some((pond) => pond.id === selectedPondId)) {
+      setFrameReady(false);
+      setSelectedPondId(ponds[0]?.id ?? "");
+    }
+  }, [ponds, selectedPondId]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      const data = event.data as { type?: string; pondId?: string } | null;
+      if (data?.type === "fishlink:ready" && data.pondId === selectedPondId) {
+        setFrameReady(true);
+      }
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [selectedPondId]);
+
+  useEffect(() => {
+    if (!frameReady) return;
+    const frame = iframeRef.current?.contentWindow;
+    if (!frame) return;
+
+    frame.postMessage(
+      {
+        type: "fishlink:status",
+        status: liveStatus,
+        lastFetchedAt: live.lastFetchedAt,
+      },
+      window.location.origin
+    );
+
+    if (reading) {
+      frame.postMessage(
+        { type: "fishlink:reading", reading },
+        window.location.origin
+      );
+    }
+  }, [frameReady, live.lastFetchedAt, liveStatus, reading]);
+
+  const iframeSrc = `${process.env.PUBLIC_URL || ""}/fish_pond-live.html?embedded=1&pondId=${encodeURIComponent(
+    selectedPondId
+  )}`;
+  const recordedAt = reading?.recordedAt
+    ? new Date(reading.recordedAt).toLocaleString()
+    : "No reading received yet";
 
   return (
     <div className="pond-sim-page">
       <section className="pond-sim-hero">
         <div className="pond-sim-hero-copy">
-          <span className="pond-sim-eyebrow">FISHLINK · INTERACTIVE LAB</span>
-          <h2>Live Pond Simulation</h2>
+          <span className="pond-sim-eyebrow">FISHLINK · LIVE POND</span>
+          <h2>Live Pond Visualization</h2>
           <p>
-            Explore a virtual fish pond and observe its environment. The animated
-            simulation will be connected here by the FishLink simulation team.
+            The pond animation follows the latest telemetry saved for the selected
+            pond. Older readings remain visible but are marked stale or offline so
+            they are never presented as live.
           </p>
-          <div className="pond-sim-status"><span /> Simulation workspace ready for integration</div>
+          <div className={`pond-sim-status ${liveStatus}`}>
+            <span />
+            {statusLabel[liveStatus]}
+          </div>
         </div>
-        <div className="pond-sim-hero-art" aria-hidden="true">🐟</div>
+        <div className="pond-sim-hero-art" aria-hidden="true">
+          🐟
+        </div>
       </section>
 
       <section className="pond-sim-context panel">
         <div className="pond-sim-section-heading">
           <div>
-            <h3>Simulation environment</h3>
-            <p>Select a registered pond to provide context to the simulation.</p>
+            <h3>Live pond</h3>
+            <p>Select a registered pond to receive its latest backend readings.</p>
           </div>
-          <span className="pond-sim-tag">ANIMATION SLOT</span>
+          <span className="pond-sim-tag">BACKEND LIVE DATA</span>
         </div>
 
         {ponds.length > 0 ? (
@@ -61,61 +137,82 @@ export default function PondSimulation({ farms, ponds }: Props) {
             <select
               id="pond-simulation-select"
               value={selectedPondId}
-              onChange={(event) => setSelectedPondId(event.target.value)}
+              onChange={(event) => {
+                setFrameReady(false);
+                setSelectedPondId(event.target.value);
+              }}
             >
               {ponds.map((pond) => (
-                <option key={pond.id} value={pond.id}>{pond.name}</option>
+                <option key={pond.id} value={pond.id}>
+                  {pond.name}
+                </option>
               ))}
             </select>
           </div>
         ) : (
           <div className="pond-sim-empty-context">
-            No registered ponds yet. You can still build and test the animation independently;
-            pond data will become available here when a pond is added in My Farms.
+            No registered ponds yet. Add a farm and pond in My Farms to begin
+            receiving live water-quality readings.
           </div>
         )}
 
         {selectedPond && (
           <div className="pond-sim-context-grid">
-            <div><small>Pond</small><strong>{selectedPond.name}</strong></div>
-            <div><small>Farm</small><strong>{selectedFarm?.name ?? "Farm not found"}</strong></div>
-            <div><small>Stock population</small><strong>{selectedPond.population.toLocaleString()} fish</strong></div>
-            <div><small>Dimensions</small><strong>{selectedPond.length} × {selectedPond.width} m</strong></div>
+            <div>
+              <small>Pond</small>
+              <strong>{selectedPond.name}</strong>
+            </div>
+            <div>
+              <small>Farm</small>
+              <strong>{selectedFarm?.name ?? "Farm not found"}</strong>
+            </div>
+            <div>
+              <small>Last reading</small>
+              <strong>{recordedAt}</strong>
+            </div>
+            <div>
+              <small>Source</small>
+              <strong>{reading?.source ?? "Waiting"}</strong>
+            </div>
           </div>
         )}
       </section>
 
-      {/*
-        FUTURE ANIMATION MOUNT POINT
-        The simulation developer can replace this placeholder with their React
-        animation component, canvas, Three.js scene, or a secured iframe.
-        Props already available above: selectedPond, selectedFarm, farms, ponds.
-        Keep the outer .pond-sim-stage container so the page layout remains stable.
-      */}
       <section className="pond-sim-stage" id="fishlink-pond-simulation-stage">
-        <div className="pond-sim-stage-inner">
-          <div className="pond-sim-stage-icon">◉</div>
-          <span className="pond-sim-stage-label">ANIMATION VIEWPORT</span>
-          <h3>Your interactive pond will appear here</h3>
-          <p>
-            This space is intentionally reserved for the standalone pond animation.
-            No artificial animation or fish-growth calculation is running in this page.
-          </p>
-          <div className="pond-sim-stage-specs">
-            <span>Responsive viewport</span><span>React / Canvas / Three.js ready</span><span>FishLink pond data available</span>
+        {selectedPond ? (
+          <div className="pond-sim-frame-wrap">
+            <div className={`pond-sim-live-strip ${liveStatus}`}>
+              <span>{statusLabel[liveStatus]}</span>
+              <small>{live.error || recordedAt}</small>
+            </div>
+            <iframe
+              key={selectedPondId}
+              ref={iframeRef}
+              className="pond-sim-frame"
+              src={iframeSrc}
+              title={`Live pond visualization for ${selectedPond.name}`}
+            />
           </div>
-        </div>
+        ) : (
+          <div className="pond-sim-stage-inner">
+            <div className="pond-sim-stage-icon">◉</div>
+            <span className="pond-sim-stage-label">LIVE VIEWPORT</span>
+            <h3>Add a pond to begin</h3>
+            <p>
+              The pond visualization starts automatically when the selected pond
+              has backend telemetry.
+            </p>
+          </div>
+        )}
       </section>
 
       <section className="pond-sim-integration-note">
         <span>↗</span>
         <div>
-          <strong>For the simulation developer</strong>
+          <strong>Live data bridge</strong>
           <p>
-            Build the animation as an independent component and mount it inside
-            <code> #fishlink-pond-simulation-stage </code> in this file. Use the
-            selected pond object as the initial data source. See the integration
-            guide included with this project.
+            The animation is embedded locally and receives readings from this
+            page. It does not connect to the public MQTT broker while embedded.
           </p>
         </div>
       </section>
