@@ -2,6 +2,11 @@ import React, { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import PondSimulation from "./PondSimulation";
 import {
+  CUSTOMER_SERVICE,
+  isWhatsAppNumber,
+  whatsappUrl,
+} from "./contact";
+import {
   ApiError,
   api,
   clearSession,
@@ -77,6 +82,8 @@ type Reading = {
   date: string;
 };
 
+type ListingStatus = "available" | "sold";
+
 type Listing = {
   id: string;
   name: string;
@@ -84,8 +91,32 @@ type Listing = {
   price: number;
   description: string;
   seller: string;
+  sellerId?: string;
+  sellerPhone?: string;
+  status: ListingStatus;
   emoji: string;
 };
+
+type Inquiry = {
+  id: string;
+  listingId: string;
+  listingName: string;
+  seller: string;
+  sellerId?: string;
+  sellerPhone?: string;
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+  date: string;
+  status: "new" | "responded";
+};
+
+type CommunityGroupId =
+  | "general"
+  | "farmers"
+  | "veterinary"
+  | "sellers"
+  | "enthusiasts";
 
 type Message = {
   id: string;
@@ -94,6 +125,7 @@ type Message = {
   date: string;
   mine?: boolean;
   role?: string;
+  group: CommunityGroupId;
 };
 
 
@@ -106,6 +138,7 @@ type AppData = {
   readings: Reading[];
   listings: Listing[];
   messages: Message[];
+  inquiries: Inquiry[];
 };
 
 const makeId = () =>
@@ -125,6 +158,53 @@ const accountTypes: Track[] = [
   "Other",
 ];
 
+const communityGroups: {
+  id: CommunityGroupId;
+  label: string;
+  description: string;
+}[] = [
+  {
+    id: "general",
+    label: "General",
+    description: "Open discussion for everyone in the FishLink community.",
+  },
+  {
+    id: "farmers",
+    label: "Farmers",
+    description: "Pond management, feeding, growth and daily production.",
+  },
+  {
+    id: "veterinary",
+    label: "Veterinary",
+    description: "Fish health, disease prevention and expert guidance.",
+  },
+  {
+    id: "sellers",
+    label: "Sellers",
+    description: "Feed, fingerlings, equipment and market conversations.",
+  },
+  {
+    id: "enthusiasts",
+    label: "Enthusiasts",
+    description: "Learning, small-scale growing and shared experience.",
+  },
+];
+
+const communityGroupForRole = (role?: string): CommunityGroupId => {
+  switch (role) {
+    case "Fish Farmer":
+      return "farmers";
+    case "Veterinary Doctor":
+      return "veterinary";
+    case "Seller / Supplier":
+      return "sellers";
+    case "Enthusiast":
+      return "enthusiasts";
+    default:
+      return "general";
+  }
+};
+
 const starterListings: Listing[] = [
   {
     id: "listing-1",
@@ -133,6 +213,7 @@ const starterListings: Listing[] = [
     price: 2500,
     description: "Fresh live catfish available for pickup.",
     seller: "Green Valley Farm",
+    status: "available",
     emoji: "🐟",
   },
   {
@@ -142,6 +223,7 @@ const starterListings: Listing[] = [
     price: 28000,
     description: "Floating feed suitable for growing catfish.",
     seller: "AgroFeed Ltd",
+    status: "available",
     emoji: "🌾",
   },
   {
@@ -151,6 +233,7 @@ const starterListings: Listing[] = [
     price: 75,
     description: "Healthy fingerlings from a hatchery.",
     seller: "FreshFinger Hatchery",
+    status: "available",
     emoji: "🐠",
   },
   {
@@ -160,6 +243,7 @@ const starterListings: Listing[] = [
     price: 18500,
     description: "Test pH and basic pond water conditions.",
     seller: "AquaTech Supplies",
+    status: "available",
     emoji: "🧪",
   },
   {
@@ -169,6 +253,7 @@ const starterListings: Listing[] = [
     price: 10000,
     description: "Professional pond assessment and advice.",
     seller: "Dr. Emmanuel",
+    status: "available",
     emoji: "🩺",
   },
   {
@@ -178,6 +263,7 @@ const starterListings: Listing[] = [
     price: 65000,
     description: "Aeration equipment for improved oxygenation.",
     seller: "AquaTech Supplies",
+    status: "available",
     emoji: "💧",
   },
 ];
@@ -185,24 +271,59 @@ const starterListings: Listing[] = [
 const starterMessages: Message[] = [
   {
     id: "msg-1",
+    sender: "FishLink Team",
+    role: "Community",
+    text: "Welcome. Choose a group above and join the conversation.",
+    date: "Today",
+    group: "general",
+  },
+  {
+    id: "msg-2",
     sender: "Emmanuel",
     role: "Fish Farmer",
     text: "My pond water became cloudy after feeding. Any suggestions?",
     date: "Today",
+    group: "farmers",
   },
   {
-    id: "msg-2",
+    id: "msg-3",
     sender: "Tunde",
     role: "Fish Farmer",
     text: "Check the amount of feed and remove any uneaten feed.",
     date: "Today",
+    group: "farmers",
   },
   {
-    id: "msg-3",
+    id: "msg-4",
     sender: "Dr. Emmanuel",
     role: "Veterinary Doctor",
     text: "Good water quality is important. Check dissolved oxygen and ammonia if possible.",
     date: "Yesterday",
+    group: "veterinary",
+  },
+  {
+    id: "msg-5",
+    sender: "Ebere",
+    role: "Fish Farmer",
+    text: "What signs should I watch for when fish stop feeding?",
+    date: "Yesterday",
+    group: "veterinary",
+  },
+  {
+    id: "msg-6",
+    sender: "AgroFeed Ltd",
+    role: "Seller / Supplier",
+    text: "We have floating feed suitable for grow-out ponds. Ask about pellet sizes.",
+    date: "Yesterday",
+    group: "sellers",
+  },
+  {
+    id: "msg-7",
+    sender: "Tola",
+    role: "Enthusiast",
+    text: "I am planning a small backyard pond. What species is easiest to start with?",
+    date: "Yesterday",
+    group: "enthusiasts",
   },
 ];
 
@@ -215,9 +336,11 @@ const initialData: AppData = {
   readings: [],
   listings: starterListings,
   messages: starterMessages,
+  inquiries: [],
 };
 
 const LOCAL_IMPORT_KEY = "fishlink-local-import-v1";
+const LOCAL_CONTENT_KEY = "fishlink-local-content-v1";
 
 const toNumber = (
   value: string | number | null | undefined,
@@ -445,23 +568,66 @@ const trackMetrics: Record<string, string[]> = {
   Other: ["Marketplace", "Community", "Farms", "Resources"],
 };
 
-function readSavedData(): AppData {
-  try {
-    const saved = localStorage.getItem("fishlink-data-v2");
+const withListingDefaults = (listing: Listing): Listing => ({
+  ...listing,
+  status: listing.status === "sold" ? "sold" : "available",
+});
 
-    if (!saved) return initialData;
+const withMessageGroup = (message: Message): Message => ({
+  ...message,
+  group: message.group || "general",
+});
+
+function readLocalContent(): {
+  listings: Listing[];
+  messages: Message[];
+  inquiries: Inquiry[];
+} | null {
+  try {
+    const saved = localStorage.getItem(LOCAL_CONTENT_KEY);
+    if (!saved) return null;
 
     const parsed = JSON.parse(saved);
 
     return {
+      listings: Array.isArray(parsed.listings)
+        ? parsed.listings.map(withListingDefaults)
+        : [],
+      messages: Array.isArray(parsed.messages)
+        ? parsed.messages.map(withMessageGroup)
+        : [],
+      inquiries: Array.isArray(parsed.inquiries) ? parsed.inquiries : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readSavedData(): AppData {
+  try {
+    const saved = localStorage.getItem("fishlink-data-v2");
+    const localContent = readLocalContent();
+
+    if (!saved && !localContent) return initialData;
+
+    const parsed = saved ? JSON.parse(saved) : {};
+    const rawListings: Listing[] = localContent
+      ? localContent.listings
+      : parsed.listings?.length
+      ? parsed.listings
+      : starterListings;
+    const rawMessages: Message[] = localContent
+      ? localContent.messages
+      : parsed.messages?.length
+      ? parsed.messages
+      : starterMessages;
+
+    return {
       ...initialData,
       ...parsed,
-      listings: parsed.listings?.length
-        ? parsed.listings
-        : starterListings,
-      messages: parsed.messages?.length
-        ? parsed.messages
-        : starterMessages,
+      listings: rawListings.map(withListingDefaults),
+      messages: rawMessages.map(withMessageGroup),
+      inquiries: localContent?.inquiries || parsed.inquiries || [],
     };
   } catch {
     return initialData;
@@ -486,7 +652,11 @@ export default function App() {
   const [selectedFarm, setSelectedFarm] = useState("");
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
+  const [contactListingId, setContactListingId] = useState<string | null>(null);
+  const [showCustomerService, setShowCustomerService] = useState(false);
   const [chatText, setChatText] = useState("");
+  const [communityGroup, setCommunityGroup] =
+    useState<CommunityGroupId>("general");
   const [toast, setToast] = useState("");
 
   const [showPassword, setShowPassword] = useState(false);
@@ -505,8 +675,18 @@ export default function App() {
     translations[data.language]?.[key] ?? translations.en[key] ?? key;
 
   useEffect(() => {
-    if (hasSession()) return;
-    localStorage.setItem("fishlink-data-v2", JSON.stringify(data));
+    localStorage.setItem(
+      LOCAL_CONTENT_KEY,
+      JSON.stringify({
+        listings: data.listings,
+        messages: data.messages,
+        inquiries: data.inquiries,
+      })
+    );
+
+    if (!hasSession()) {
+      localStorage.setItem("fishlink-data-v2", JSON.stringify(data));
+    }
   }, [data]);
 
   useEffect(() => {
@@ -517,12 +697,29 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (!contactListingId && !showCustomerService) return;
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setContactListingId(null);
+      setShowCustomerService(false);
+    };
+
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [contactListingId, showCustomerService]);
+
   const notify = (message: string) => setToast(message);
 
   const update = (changes: Partial<AppData>) =>
     setData((old) => ({ ...old, ...changes }));
 
   const backendUser = Boolean(data.user && !data.user.guest && hasSession());
+
+  useEffect(() => {
+    setCommunityGroup(communityGroupForRole(data.user?.role));
+  }, [data.user?.role]);
   const localImportData =
     backendUser && !localImportDone
       ? loadLocalImportData(localSnapshot)
@@ -1120,9 +1317,15 @@ export default function App() {
     const description = String(
       form.get("description") || ""
     ).trim();
+    const sellerPhone = String(form.get("whatsapp") || "").trim();
 
     if (!name || price <= 0) {
       notify("Enter a product name and valid price.");
+      return;
+    }
+
+    if (!isWhatsAppNumber(sellerPhone)) {
+      notify("Enter a valid WhatsApp number for buyers.");
       return;
     }
 
@@ -1143,6 +1346,9 @@ export default function App() {
           price,
           description,
           seller: data.user?.name || "FishLink Member",
+          sellerId: data.user?.email || undefined,
+          sellerPhone,
+          status: "available",
           emoji: emoji[listingCategory] || "📦",
         },
         ...data.listings,
@@ -1151,7 +1357,7 @@ export default function App() {
 
     event.currentTarget.reset();
 
-    notify("Listing published.");
+    notify("Listing published with WhatsApp contact.");
   };
 
   const visibleListings = data.listings.filter((listing) => {
@@ -1168,7 +1374,135 @@ export default function App() {
     return matchesCategory && matchesSearch;
   });
 
+  const isMyListing = (listing: Listing) =>
+    Boolean(
+      data.user &&
+        (listing.sellerId
+          ? listing.sellerId === data.user.email
+          : listing.seller === data.user.name)
+    );
+
+  const myListings = data.listings.filter(isMyListing);
+
+  const sellerWhatsApp =
+    data.user?.phone ||
+    myListings.find((listing) => listing.sellerPhone)?.sellerPhone ||
+    "";
+
+  const myInquiries = data.inquiries.filter((inquiry) =>
+    data.user
+      ? inquiry.sellerId
+        ? inquiry.sellerId === data.user.email
+        : inquiry.seller === data.user.name
+      : false
+  );
+
+  const newInquiryCount = myInquiries.filter(
+    (inquiry) => inquiry.status === "new"
+  ).length;
+
+  const contactListing =
+    data.listings.find((listing) => listing.id === contactListingId) || null;
+
+  const listingInquiryMessage = (listing: Listing) =>
+    `Hello ${listing.seller}, I am interested in ${listing.name} (${money(
+      listing.price
+    )}) listed on FishLink. Is it still available?`;
+
+  const sendInquiry = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!contactListing) return;
+
+    const form = new FormData(event.currentTarget);
+    const buyerName = String(form.get("buyerName") || "").trim();
+    const buyerPhone = String(form.get("buyerPhone") || "").trim();
+    const message = String(form.get("message") || "").trim();
+
+    if (!buyerName || !buyerPhone || message.length < 5) {
+      notify("Enter your name, phone number and a short message.");
+      return;
+    }
+
+    update({
+      inquiries: [
+        {
+          id: makeId(),
+          listingId: contactListing.id,
+          listingName: contactListing.name,
+          seller: contactListing.seller,
+          sellerId: contactListing.sellerId,
+          sellerPhone: contactListing.sellerPhone,
+          buyerName,
+          buyerPhone,
+          message,
+          date: new Date().toISOString(),
+          status: "new",
+        },
+        ...data.inquiries,
+      ],
+    });
+
+    setContactListingId(null);
+    notify(
+      contactListing.sellerPhone
+        ? "Inquiry saved. Use WhatsApp for a faster reply."
+        : "Inquiry saved for FishLink customer service follow-up."
+    );
+  };
+
+  const toggleListingStatus = (id: string) => {
+    const listing = data.listings.find((item) => item.id === id);
+    if (!listing) return;
+
+    update({
+      listings: data.listings.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              status: item.status === "sold" ? "available" : "sold",
+            }
+          : item
+      ),
+    });
+
+    notify(
+      listing.status === "sold"
+        ? "Listing is available again."
+        : "Listing marked as sold."
+    );
+  };
+
+  const deleteListing = (id: string) => {
+    if (!window.confirm("Delete this listing?")) return;
+
+    update({
+      listings: data.listings.filter((listing) => listing.id !== id),
+    });
+
+    notify("Listing deleted.");
+  };
+
+  const markInquiryResponded = (id: string) => {
+    update({
+      inquiries: data.inquiries.map((inquiry) =>
+        inquiry.id === id
+          ? { ...inquiry, status: "responded" as const }
+          : inquiry
+      ),
+    });
+
+    notify("Inquiry marked as handled.");
+  };
+
   // COMMUNITY
+
+  const activeCommunityGroup =
+    communityGroups.find((group) => group.id === communityGroup) ??
+    communityGroups[0];
+
+  const communityMessages = data.messages.filter(
+    (message) => message.group === communityGroup
+  );
 
   const sendMessage = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1188,6 +1522,7 @@ export default function App() {
             minute: "2-digit",
           }),
           mine: true,
+          group: communityGroup,
         },
       ],
     });
@@ -1864,6 +2199,14 @@ export default function App() {
           </span>
 
           <div className="topbar-right">
+            <button
+              className="support-button"
+              type="button"
+              onClick={() => setShowCustomerService(true)}
+            >
+              Customer Service
+            </button>
+
             <LanguageSelect />
 
             <button
@@ -1984,35 +2327,180 @@ export default function App() {
                   </section>
                 </>
               ) : isSeller ? (
-                <div className="metric-grid">
-                  <Metric
-                    icon="🛒"
-                    label="My Listings"
-                    value={
-                      data.listings.filter(
-                        (item) => item.seller === data.user?.name
-                      ).length
-                    }
-                  />
+                <>
+                  <div className="metric-grid">
+                    <Metric
+                      icon="🛒"
+                      label="My Listings"
+                      value={myListings.length}
+                    />
 
-                  <Metric
-                    icon="📦"
-                    label="Categories"
-                    value={5}
-                  />
+                    <Metric
+                      icon="📦"
+                      label="Active Listings"
+                      value={
+                        myListings.filter(
+                          (listing) => listing.status === "available"
+                        ).length
+                      }
+                    />
 
-                  <Metric
-                    icon="👥"
-                    label="Potential Customers"
-                    value="Explore"
-                  />
+                    <Metric
+                      icon="👥"
+                      label="New Inquiries"
+                      value={newInquiryCount}
+                    />
 
-                  <Metric
-                    icon="📈"
-                    label="Marketplace"
-                    value="Open"
-                  />
-                </div>
+                    <Metric
+                      icon="📈"
+                      label="WhatsApp Contact"
+                      value={sellerWhatsApp ? "Ready" : "Add number"}
+                    />
+                  </div>
+
+                  <section className="panel seller-workspace">
+                    <div className="panel-heading">
+                      <div>
+                        <h2>Seller Tools</h2>
+                        <p>
+                          Manage your listings, WhatsApp contact and buyer
+                          inquiries.
+                        </p>
+                      </div>
+
+                      <Button onClick={() => go("marketplace")}>
+                        Open Marketplace
+                      </Button>
+                    </div>
+
+                    <div className="settings-row">
+                      <span>Account WhatsApp</span>
+                      <strong>
+                        {sellerWhatsApp || "Set a number when publishing"}
+                      </strong>
+                    </div>
+
+                    <h3 className="seller-subheading">My Listings</h3>
+
+                    {myListings.length === 0 ? (
+                      <Empty
+                        title="No listings yet"
+                        description="Publish your first product or service from the marketplace."
+                        icon="🛒"
+                      />
+                    ) : (
+                      <div className="seller-listings">
+                        {myListings.map((listing) => (
+                          <div
+                            className="seller-listing"
+                            key={listing.id}
+                          >
+                            <span className="seller-listing-icon">
+                              {listing.emoji}
+                            </span>
+
+                            <div className="seller-listing-copy">
+                              <strong>{listing.name}</strong>
+                              <small>
+                                {listing.category} · {money(listing.price)} ·{" "}
+                                {listing.status === "sold"
+                                  ? "Sold"
+                                  : "Available"}
+                              </small>
+                              {listing.sellerPhone && (
+                                <small>WhatsApp: {listing.sellerPhone}</small>
+                              )}
+                            </div>
+
+                            <div className="seller-listing-actions">
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={() => toggleListingStatus(listing.id)}
+                              >
+                                {listing.status === "sold"
+                                  ? "Relist"
+                                  : "Mark sold"}
+                              </button>
+
+                              <button
+                                type="button"
+                                className="text-button danger"
+                                onClick={() => deleteListing(listing.id)}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <h3 className="seller-subheading">Buyer Inquiries</h3>
+
+                    {myInquiries.length === 0 ? (
+                      <Empty
+                        title="No inquiries yet"
+                        description="Buyer questions from the marketplace will appear here."
+                        icon="💬"
+                      />
+                    ) : (
+                      <div className="inquiry-list">
+                        {myInquiries.map((inquiry) => (
+                          <article className="inquiry-card" key={inquiry.id}>
+                            <div className="inquiry-copy">
+                              <div className="inquiry-title">
+                                <strong>{inquiry.buyerName}</strong>
+                                <span
+                                  className={`status-pill ${inquiry.status}`}
+                                >
+                                  {inquiry.status === "new"
+                                    ? "New"
+                                    : "Handled"}
+                                </span>
+                              </div>
+
+                              <small>
+                                {inquiry.listingName} ·{" "}
+                                {new Date(inquiry.date).toLocaleString()}
+                              </small>
+
+                              <p>{inquiry.message}</p>
+
+                              <small>Buyer phone: {inquiry.buyerPhone}</small>
+                            </div>
+
+                            <div className="inquiry-actions">
+                              <a
+                                className="button button-primary button-whatsapp"
+                                href={whatsappUrl(
+                                  inquiry.buyerPhone,
+                                  `Hello ${inquiry.buyerName}, thank you for your FishLink inquiry about ${inquiry.listingName}.`
+                                )}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Reply on WhatsApp
+                              </a>
+
+                              {inquiry.status === "new" && (
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() =>
+                                    markInquiryResponded(inquiry.id)
+                                  }
+                                >
+                                  Mark handled
+                                </button>
+                              )}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </>
               ) : isDoctor ? (
                 <div className="metric-grid">
                   <Metric icon="🩺" label="Health Topics" value={3} />
@@ -2847,6 +3335,19 @@ export default function App() {
                       />
                     </label>
 
+                    <label>
+                      WhatsApp Number
+
+                      <input
+                        name="whatsapp"
+                        type="tel"
+                        inputMode="tel"
+                        defaultValue={data.user?.phone || ""}
+                        placeholder="e.g. 0803 123 4567"
+                        required
+                      />
+                    </label>
+
                     <Button type="submit">
                       Publish Listing
                     </Button>
@@ -2880,9 +3381,15 @@ export default function App() {
                         </div>
 
                         <div className="listing-body">
-                          <span className="category-pill">
-                            {listing.category}
-                          </span>
+                          <div className="listing-meta">
+                            <span className="category-pill">
+                              {listing.category}
+                            </span>
+
+                            {listing.status === "sold" && (
+                              <span className="status-pill sold">Sold</span>
+                            )}
+                          </div>
 
                           <h3>{listing.name}</h3>
 
@@ -2894,16 +3401,30 @@ export default function App() {
                             Seller: {listing.seller}
                           </small>
 
-                          <Button
-                            outline
-                            onClick={() =>
-                              notify(
-                                "Seller contact and ordering will be enabled with the backend."
-                              )
-                            }
-                          >
-                            Contact Seller
-                          </Button>
+                          <div className="listing-actions">
+                            <Button
+                              outline
+                              onClick={() =>
+                                setContactListingId(listing.id)
+                              }
+                            >
+                              Contact Seller
+                            </Button>
+
+                            {listing.sellerPhone && (
+                              <a
+                                className="button button-whatsapp"
+                                href={whatsappUrl(
+                                  listing.sellerPhone,
+                                  listingInquiryMessage(listing)
+                                )}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                WhatsApp
+                              </a>
+                            )}
+                          </div>
                         </div>
                       </article>
                     ))}
@@ -2940,36 +3461,74 @@ export default function App() {
                 </div>
               </section>
 
+              <div
+                className="community-groups"
+                role="tablist"
+                aria-label="Community groups"
+              >
+                {communityGroups.map((group) => {
+                  const count = data.messages.filter(
+                    (message) => message.group === group.id
+                  ).length;
+
+                  return (
+                    <button
+                      key={group.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={communityGroup === group.id}
+                      className={`community-group ${
+                        communityGroup === group.id ? "active" : ""
+                      }`}
+                      onClick={() => {
+                        setCommunityGroup(group.id);
+                        setChatText("");
+                      }}
+                      title={group.description}
+                    >
+                      <strong>{group.label}</strong>
+                      <span>{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
               <section className="panel">
                 <div className="chat-heading">
                   <span className="record-icon">💬</span>
 
                   <div>
-                    <h2>Farmers Group</h2>
+                    <h2>{activeCommunityGroup.label} Group</h2>
                     <small>
-                      Community preview · Local prototype
+                      {activeCommunityGroup.description} · Local prototype
                     </small>
                   </div>
                 </div>
 
                 <div className="chat-messages">
-                  {data.messages.map((message) => (
-                    <div
-                      className={`chat-message ${
-                        message.mine ? "mine" : ""
-                      }`}
-                      key={message.id}
-                    >
-                      <strong>
-                        {message.sender}{" "}
-                        <small>{message.role}</small>
-                      </strong>
-
-                      <p>{message.text}</p>
-
-                      <small>{message.date}</small>
+                  {communityMessages.length === 0 ? (
+                    <div className="chat-empty">
+                      No messages in this group yet. Start the conversation.
                     </div>
-                  ))}
+                  ) : (
+                    communityMessages.map((message) => (
+                      <div
+                        className={`chat-message ${
+                          message.mine ? "mine" : ""
+                        }`}
+                        key={message.id}
+                      >
+                        <strong>
+                          {message.sender}{" "}
+                          <small>{message.role}</small>
+                        </strong>
+
+                        <p>{message.text}</p>
+
+                        <small>{message.date}</small>
+                      </div>
+                    ))
+                  )}
                 </div>
 
                 <form
@@ -2981,8 +3540,8 @@ export default function App() {
                     onChange={(event) =>
                       setChatText(event.target.value)
                     }
-                    placeholder="Write a message..."
-                    aria-label="Community message"
+                    placeholder={`Message the ${activeCommunityGroup.label.toLowerCase()} group...`}
+                    aria-label={`Message the ${activeCommunityGroup.label} group`}
                   />
 
                   <Button type="submit">Send ➤</Button>
@@ -3058,6 +3617,17 @@ export default function App() {
                 </div>
 
                 <div className="settings-row">
+                  <span>Customer service</span>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => setShowCustomerService(true)}
+                  >
+                    Contact support
+                  </button>
+                </div>
+
+                <div className="settings-row">
                   <span>Farms</span>
                   <strong>{data.farms.length}</strong>
                 </div>
@@ -3101,7 +3671,14 @@ export default function App() {
           )}
 
           <footer className="app-footer">
-            FishLink · Connect · Learn · Grow
+            <span>FishLink · Connect · Learn · Grow</span>
+            <button
+              type="button"
+              className="footer-support"
+              onClick={() => setShowCustomerService(true)}
+            >
+              Customer Service
+            </button>
           </footer>
         </div>
       </main>
@@ -3120,6 +3697,229 @@ export default function App() {
           </button>
         ))}
       </nav>
+
+      {/* CONTACT SELLER */}
+
+      {contactListing && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setContactListingId(null)}
+        >
+          <section
+            className="modal contact-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="contact-seller-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setContactListingId(null)}
+              aria-label="Close contact seller"
+            >
+              ×
+            </button>
+
+            <span className="modal-kicker">Contact Seller</span>
+
+            <h2 id="contact-seller-title">{contactListing.seller}</h2>
+
+            <p className="modal-subtitle">
+              {contactListing.name} · {money(contactListing.price)}
+              {contactListing.status === "sold" ? " · Sold" : ""}
+            </p>
+
+            {isMyListing(contactListing) ? (
+              <>
+                <div className="notice">
+                  This is your listing. Manage its status and buyer inquiries
+                  from your seller dashboard.
+                </div>
+
+                <Button
+                  onClick={() => {
+                    setContactListingId(null);
+                    go("dashboard");
+                  }}
+                >
+                  Open Seller Tools
+                </Button>
+              </>
+            ) : (
+              <>
+                {contactListing.sellerPhone ? (
+                  <>
+                    <a
+                      className="button button-whatsapp contact-whatsapp"
+                      href={whatsappUrl(
+                        contactListing.sellerPhone,
+                        listingInquiryMessage(contactListing)
+                      )}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Chat on WhatsApp
+                    </a>
+
+                    <p className="contact-number">
+                      WhatsApp: {contactListing.sellerPhone}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="notice">
+                      This demo seller has no direct WhatsApp number.
+                      Contact FishLink customer service and we will help
+                      with your inquiry.
+                    </div>
+
+                    <a
+                      className="button button-whatsapp contact-whatsapp"
+                      href={whatsappUrl(
+                        CUSTOMER_SERVICE.whatsapp,
+                        `Hello FishLink Customer Service, I would like to contact ${contactListing.seller} about ${contactListing.name} listed on FishLink.`
+                      )}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Contact Customer Service
+                    </a>
+                  </>
+                )}
+
+                <form
+                  className="entry-form contact-form"
+                  key={contactListing.id}
+                  onSubmit={sendInquiry}
+                >
+                  <h3>Send an inquiry</h3>
+
+                  <div className="form-two">
+                    <label>
+                      Your name
+
+                      <input
+                        name="buyerName"
+                        defaultValue={
+                          data.user?.guest ? "" : data.user?.name || ""
+                        }
+                        required
+                      />
+                    </label>
+
+                    <label>
+                      Your phone
+
+                      <input
+                        name="buyerPhone"
+                        type="tel"
+                        inputMode="tel"
+                        defaultValue={
+                          data.user?.guest ? "" : data.user?.phone || ""
+                        }
+                        required
+                      />
+                    </label>
+                  </div>
+
+                  <label>
+                    Message
+
+                    <textarea
+                      name="message"
+                      rows={4}
+                      defaultValue={listingInquiryMessage(contactListing)}
+                      required
+                    />
+                  </label>
+
+                  <Button type="submit">Send Inquiry</Button>
+                </form>
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* CUSTOMER SERVICE */}
+
+      {showCustomerService && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setShowCustomerService(false)}
+        >
+          <section
+            className="modal support-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="customer-service-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setShowCustomerService(false)}
+              aria-label="Close customer service"
+            >
+              ×
+            </button>
+
+            <span className="modal-kicker">Customer Service</span>
+
+            <h2 id="customer-service-title">How can we help?</h2>
+
+            <p className="modal-subtitle">
+              Contact FishLink for help with accounts, marketplace listings,
+              WhatsApp contact or pond records.
+            </p>
+
+            <div className="support-actions">
+              <a
+                className="button button-whatsapp"
+                href={whatsappUrl(
+                  CUSTOMER_SERVICE.whatsapp,
+                  "Hello FishLink Customer Service, I need help with my account."
+                )}
+                target="_blank"
+                rel="noreferrer"
+              >
+                WhatsApp Support
+              </a>
+
+              <a
+                className="button button-outline"
+                href={`tel:${CUSTOMER_SERVICE.phone.replace(/[^\d+]/g, "")}`}
+              >
+                Call {CUSTOMER_SERVICE.phone}
+              </a>
+
+              <a
+                className="button button-outline"
+                href={`mailto:${CUSTOMER_SERVICE.email}`}
+              >
+                Email {CUSTOMER_SERVICE.email}
+              </a>
+            </div>
+
+            <div className="settings-row">
+              <span>Support hours</span>
+              <strong>{CUSTOMER_SERVICE.hours}</strong>
+            </div>
+
+            {CUSTOMER_SERVICE.isDemo && (
+              <div className="notice">
+                These are demo support details. Set the
+                REACT_APP_CUSTOMER_SERVICE_WHATSAPP and
+                REACT_APP_CUSTOMER_SERVICE_PHONE environment variables
+                before launch.
+              </div>
+            )}
+          </section>
+        </div>
+      )}
 
       {/* NOTIFICATIONS */}
 

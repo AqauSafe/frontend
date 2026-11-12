@@ -1241,6 +1241,59 @@ strong {
   line-height: 1.6;
 }
 
+.community-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.community-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #dce7ec;
+  border-radius: 9px;
+  color: var(--navy);
+  background: white;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.community-group:hover {
+  border-color: #9ed9c8;
+}
+
+.community-group.active {
+  border-color: #08c99a;
+  background: #e9f9f2;
+}
+
+.community-group span {
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  color: var(--muted);
+  background: #eef5f7;
+  font-size: 9px;
+  text-align: center;
+}
+
+.community-group.active span {
+  color: #087a5a;
+  background: #c8eee0;
+}
+
+.chat-empty {
+  padding: 24px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
 .chat-heading {
   display: flex;
   align-items: center;
@@ -1425,6 +1478,292 @@ strong {
   box-shadow: 0 10px 30px rgba(8, 45, 72, 0.2);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.support-button {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 30px;
+  color: var(--navy);
+  background: white;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.support-button:hover {
+  color: var(--green);
+  border-color: #9adcc7;
+}
+
+.text-button {
+  width: fit-content;
+  padding: 0;
+  border: 0;
+  color: var(--green);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.text-button.danger {
+  color: #bf4d4d;
+}
+
+.listing-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.status-pill.sold {
+  color: #8a5a1e;
+  background: #fff2df;
+}
+
+.status-pill.new {
+  color: #0d6b99;
+  background: #e9f5fc;
+}
+
+.status-pill.responded {
+  color: #087e5c;
+  background: #e9f9f1;
+}
+
+.listing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.listing-actions .button {
+  flex: 1;
+  min-width: 110px;
+}
+
+.button-whatsapp {
+  color: white;
+  border-color: #0a9f64;
+  background: linear-gradient(105deg, #0a9f64, #25c47d);
+  box-shadow: 0 5px 13px rgba(10, 159, 100, 0.14);
+}
+
+.button-whatsapp:hover {
+  color: white;
+  border-color: #07875f;
+}
+
+.seller-workspace {
+  margin-top: 20px;
+}
+
+.seller-subheading {
+  margin: 22px 0 11px;
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.seller-listings,
+.inquiry-list {
+  display: grid;
+  gap: 9px;
+}
+
+.seller-listing {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfdfd;
+}
+
+.seller-listing-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  background: #eaf8f3;
+  font-size: 22px;
+}
+
+.seller-listing-copy {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+
+.seller-listing-copy strong {
+  color: var(--navy);
+  font-size: 12px;
+}
+
+.seller-listing-copy small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.seller-listing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.inquiry-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfdfd;
+}
+
+.inquiry-copy {
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  min-width: 0;
+}
+
+.inquiry-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.inquiry-title strong {
+  color: var(--navy);
+  font-size: 12px;
+}
+
+.inquiry-copy small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.inquiry-copy p {
+  margin: 4px 0;
+  color: #526d7a;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.inquiry-actions {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.footer-support {
+  margin-left: 10px;
+  padding: 0;
+  border: 0;
+  color: #087e5c;
+  background: transparent;
+  font: inherit;
+  font-weight: 800;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 20px;
+  background: rgba(4, 31, 53, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.modal {
+  position: relative;
+  width: min(100%, 570px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  padding: 25px;
+  border-radius: 18px;
+  background: white;
+  box-shadow: 0 24px 70px rgba(3, 27, 45, 0.28);
+}
+
+.modal-close {
+  position: absolute;
+  top: 13px;
+  right: 14px;
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border: 0;
+  border-radius: 50%;
+  color: #607987;
+  background: #eef4f6;
+  font-size: 21px;
+  line-height: 1;
+}
+
+.modal-kicker {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--green);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1.3px;
+  text-transform: uppercase;
+}
+
+.modal h2 {
+  margin-bottom: 6px;
+  color: var(--navy);
+  font-size: 21px;
+}
+
+.modal-subtitle {
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.contact-whatsapp {
+  width: 100%;
+}
+
+.contact-number {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: center;
+}
+
+.contact-form {
+  margin: 17px 0 0;
+}
+
+.support-actions {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 15px;
+}
+
+.support-actions .button {
+  width: 100%;
+}
+
+.support-modal .settings-row {
+  border-bottom: 0;
 }
 
 /* RESPONSIVE */
@@ -1819,4 +2158,54 @@ strong {
   .pond-sim-frame { height: 58vh; min-height: 340px; }
   .pond-sim-live-strip { align-items: flex-start; flex-direction: column; gap: 4px; }
   .pond-sim-live-strip small { max-width: 100%; }
+}
+
+@media (max-width: 760px) {
+  .support-button {
+    padding: 7px 8px;
+    font-size: 8px;
+  }
+
+  .seller-listing,
+  .inquiry-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .seller-listing-actions,
+  .inquiry-actions {
+    width: 100%;
+    justify-items: start;
+  }
+
+  .inquiry-actions .button {
+    width: 100%;
+  }
+
+  .modal-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .modal {
+    width: 100%;
+    max-height: 92vh;
+    border-radius: 18px 18px 0 0;
+    padding: 23px 18px max(23px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 420px) {
+  .support-button {
+    max-width: 84px;
+    line-height: 1.2;
+  }
+
+  .listing-actions {
+    flex-direction: column;
+  }
+
+  .listing-actions .button {
+    width: 100%;
+  }
 }

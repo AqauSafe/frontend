@@ -39,11 +39,36 @@ CI=true npm run build  # production build with warnings treated as errors
   profile page can import them into the backend. The import is idempotent and
   warns that legacy readings recorded in metres cannot be converted without pond
   depth.
-- **Marketplace and community:** these screens remain local-only; they are not yet
-  backend-backed.
+- **Marketplace and community:** these screens remain local-only. Community has
+  General, Farmers, Veterinary, Sellers and Enthusiasts groups. Marketplace
+  listings, buyer inquiries and messages are saved in browser localStorage under
+  `fishlink-local-content-v1`, including while a backend user is signed in.
 
-The backend is authoritative in backend mode. Backend data is not written back into
-the guest localStorage cache.
+The backend is authoritative for farms and telemetry in backend mode. Backend farm
+data is not written back into the guest localStorage cache.
+
+## Marketplace, sellers and customer service
+
+- Sellers can publish listings with a WhatsApp number, mark items sold or
+  available, delete listings, and review buyer inquiries.
+- Buyers can contact a seller through WhatsApp when a number is available, or send
+  an inquiry that the seller sees in **Seller Tools**.
+- Demo listings without a seller number route buyers to FishLink customer service.
+- Customer Service is available from the top bar, profile and footer, with
+  WhatsApp, phone and email actions.
+
+Customer-service details are configurable with Create React App environment
+variables:
+
+```bash
+REACT_APP_CUSTOMER_SERVICE_WHATSAPP=2348012345678
+REACT_APP_CUSTOMER_SERVICE_PHONE="+234 801 234 5678"
+REACT_APP_CUSTOMER_SERVICE_EMAIL=support@example.com
+REACT_APP_CUSTOMER_SERVICE_HOURS="Mon-Sat, 8:00-18:00 WAT"
+```
+
+The built-in values are demo placeholders and the support dialog labels them as
+such. Set the WhatsApp and phone variables before launch.
 
 ## Live pond visualization
 
@@ -74,6 +99,7 @@ details.
 - `src/api/types.ts`: backend response types
 - `src/usePondLive.ts`: five-second live telemetry polling and status thresholds
 - `src/PondSimulation.tsx`: embedded iframe and `postMessage` bridge
+- `src/contact.ts`: WhatsApp helpers and configurable customer-service details
 - `src/test1.tsx`: unwired duplicate kept for compatibility; do not delete without
   explicit approval
 - `public/fish_pond-live.html`: editable embedded simulation copy
@@ -89,5 +115,7 @@ Avoid removing those settings unless the TypeScript version is upgraded.
 
 - No frontend unit test suite or browser-based visual regression tests yet.
 - No offline mutation queue or automatic retry for failed backend writes.
-- Marketplace and community data are not persisted to the backend.
+- Marketplace listings and buyer inquiries are not persisted to the backend.
+- Seller WhatsApp contact and customer-service links open external apps; no
+  message delivery or payment flow runs inside FishLink yet.
 - Live WebSocket delivery requires Redis; this UI intentionally uses REST polling.
